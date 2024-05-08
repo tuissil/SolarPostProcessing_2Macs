@@ -23,6 +23,32 @@ import os
 import glob
 import time
 import shutil
+import scipy
+import seaborn as sns
+
+def create_folder(path):
+    try:
+        os.makedirs(f"{path}/execution")
+    except FileExistsError:
+        # directory already exists
+        pass
+
+    try:
+        os.makedirs(f"{path}/hyperparam_optim")
+    except FileExistsError:
+        # directory already exists
+        pass
+
+    try:
+        os.makedirs(f"{path}/runs")
+    except FileExistsError:
+        # directory already exists
+        pass
+
+    files = glob.glob(f'{path}/execution/*')
+    for f in files:
+        os.remove(f)
+    return
 
 
 # Function to calculate quantile score
@@ -144,17 +170,15 @@ class NWP_net(nn.Module):
 min_epoch_error = np.inf
 
 def train_model_dataloader(net, criterion, optimizer, num_epochs, train_data, vali_data, test_data, path, patience, scheduler=None, decay_steps=100, trial=None, pruner_epochs=0, pruner_max=0, pruner_sensitivity=np.inf, perfs_on_test=False, Newton_method=False, error_precision=8): #
-    #torch.manual_seed(1234)  # default 42 # for riproducibility
-
+    torch.manual_seed(1234)  # default 42 # for riproducibility
+    date_time = datetime.now().strftime("%d%m%y%H%M%S")
     if trial is None:
         # keep last num_to_keep runs
         num_to_keep = 10
-        keep_recent_files(f"{path}/runs", num_to_keep)  # not working
-        writer = SummaryWriter()
+        keep_recent_files(f"{path}/runs", num_to_keep)
+        writer = SummaryWriter(f"{path}/runs/{date_time}")
     else:
-        date_time = datetime.now().strftime("%d%m%y%H%M%S")
         print(f"Start optimization: {date_time}")
-
         # delete old trials
         folder_path=f"{path}/trials_logs"
         if trial._trial_id == 0:
@@ -356,3 +380,82 @@ def keep_recent_files(folder_path, num_to_keep=10):
                 shutil.rmtree(item_path)
         except PermissionError:
             print(f"Permission error: Unable to remove '{item_path}'")
+
+def plot_reliability_plot(quantiles, y, pred_sorted, task_name):
+    tmp_y = pd.DataFrame({"y": y.flatten()})
+    tmp_quantiles = pd.DataFrame(columns=quantiles, data=pred_sorted)
+    scores_res = pd.concat([tmp_y, tmp_quantiles], axis=1)
+    del tmp_y, tmp_quantiles
+
+
+    # reliability_plot
+    # definition of consistency bands
+    confidence_90 = 0.9
+    zscore_90 = scipy.stats.norm.ppf((1 + confidence_90) / 2)
+    confidence_50 = 0.5
+    zscore_50 = scipy.stats.norm.ppf((1 + confidence_50) / 2)
+
+    # Construct new DataFrame format for reliability
+    data_reli = pd.DataFrame()
+    for j, tau in enumerate(quantiles):
+        qtau = pred_sorted[:, j]
+        P1 = (y < qtau.reshape(-1, 1)).mean()
+
+        # bands
+        mean = tau
+        std_dev = np.std(y < qtau.reshape(-1, 1))
+        upper90 = min(mean + zscore_90 * std_dev / np.sqrt(y.shape[0]), 1)
+        lower90 = max(mean - zscore_90 * std_dev / np.sqrt(y.shape[0]), 0)
+
+        upper50 = min(mean + zscore_50 * std_dev / np.sqrt(y.shape[0]), 1)
+        lower50 = max(mean - zscore_50 * std_dev / np.sqrt(y.shape[0]), 0)
+
+        data_reli = data_reli._append(pd.DataFrame({"x": [tau], "std": [std_dev], "P1": [P1], "CI50_lower": [lower50], "CI50_upper": [upper50], "CI90_lower": [lower90], "CI90_upper": [upper90]}), ignore_index=True)  #, "method": method, "stn": stn.upper()
+
+    # Plot Reliability
+    fig, ax = plt.subplots(figsize=(10, 6))
+    #for method, group in data_band.groupby("method"):
+    #    ax.plot(group["x"], group["value"], label=method)
+    ax.plot([0, 1], [0, 1], linestyle="--", color="grey")
+    ax.fill_between(data_reli["x"], data_reli["CI50_lower"], data_reli["CI50_upper"], alpha=0.5, color="royalblue", label="CI50")
+    ax.fill_between(data_reli["x"], data_reli["CI90_lower"], data_reli["CI90_upper"], alpha=0.5, color="cornflowerblue", label="CI90")
+    ax.plot(data_reli["x"], data_reli["P1"], color="grey")
+    ax.scatter(data_reli["x"], data_reli["P1"], color='black', s=10, label="PICP")
+    ax.set_xlabel("Quantile level (tau)")
+    ax.set_ylabel("Coverage")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.legend()
+    plt.grid()
+    plt.title(f"Reliability plot {task_name}")
+    plt.show()
+    return scores_res, data_reli
+
+def plot_sharpness_plot(scores_res, task_name):
+    int_width_98 = scores_res[.99].values - scores_res[.01].values
+    int_width_90 = scores_res[.95].values - scores_res[.05].values
+    int_width_80 = scores_res[.9].values - scores_res[.1].values
+
+    # the sns catplot plot will represent
+    # np.quantile(int_width_90, [0, 0.25, 0.5, 0.75, 1])
+    # The “whiskers” extend to points that lie within 1.5 IQRs of the lower and upper quartile, and then observations
+    # that fall outside this range are displayed independently
+    # IQR = np.quantile(int_width_90, 0.75) - np.quantile(int_width_90, 0.25)
+    # highest lines = quartile 0.75 + 1.5 * IQR
+    tmp_sharp = pd.DataFrame({
+        "80": int_width_80,
+        "90": int_width_90,
+        "98": int_width_98
+    })
+
+    tmp_sharp = pd.melt(tmp_sharp, var_name="interval", value_name="width")
+
+    # Plotting
+    p2 = sns.catplot(data=tmp_sharp, kind="box", x="interval", y="width", palette="colorblind")
+    # col_wrap=4, alpha=0.7, linewidth=1.5, width=0.6)
+    p2.set_xlabels("Nominal coverage rate [%]")
+    p2.set_ylabels("Interval width [W/m^2]")
+    p2.set(ylim=(0, 1000))  # , yticks=[0, 400, 800])
+    plt.grid()
+    plt.title(f"Sharpness plot {task_name}")
+    plt.show()

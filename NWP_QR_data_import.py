@@ -43,7 +43,7 @@ def in_out_split(data):
 # form according to parameter scale_data
 def split_data(task, yr_tr, yr_te, yr_va, scale_data=True, shuffle_train=False):
     dir =os.path.join(os.getcwd(), 'data')
-    stns = [task]
+    stns = task
 
     stns_list = {}
     for stn in stns:
@@ -85,7 +85,7 @@ def split_data(task, yr_tr, yr_te, yr_va, scale_data=True, shuffle_train=False):
         stns_list[stn].x_test, stns_list[stn].y_test = in_out_split(data_te)
         stns_list[stn].target_test_df = target_test_df
 
-    return stns_list[task]
+    return stns_list
 
 
     # stns_list is a dictionary of instances of class Stn_data:
