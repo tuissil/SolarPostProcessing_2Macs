@@ -33,10 +33,10 @@ main_path = os.getcwd().replace("\\", "/")
 if __name__ == "__main__":
 
 
-    seed_everything(0)  # default 42
+    seed_everything(0)  # default 0 [bon = 0, fpk=42
 
     print("Start")
-    task_names = ["bon", "dra", "fpk", "gwn", "psu", "sxf", "tbl"]  #["bon", "dra", "fpk", "gwn", "psu", "sxf", "tbl"]  #["bon",]
+    task_names = ["bon", "dra", "fpk", "gwn", "psu", "sxf", "tbl"] #["bon", "dra", "fpk", "gwn", "psu", "sxf", "tbl"]
     yr_tr = [2017, 2018]
     yr_va = [2019]
     yr_te = [2020]
@@ -51,17 +51,17 @@ if __name__ == "__main__":
     train_model_start = False  # retrain the model
     exp_learning_rate = -4  # default -4
     learning_rate = 10 ** exp_learning_rate
-    num_epochs = 200  # default 200 100
+    num_epochs = 500  # default 200
     weight_decay_optimizer = 1e-3  # default 1e-3, L2 penalty
     decay_steps = 100  # default = 100, for learning rate scheduler
     error_precision = 4  # default: 4, number of decimals in the error
 
-    batch_size = 16  # default 64
+    batch_size = 64  # default 64
     shuffle_dataloader = True
 
     n_ensembles = 1  # for ensemble NN
 
-    patience = 50  # default 50
+    patience = 100  # default 50
     Newton_method = False  # default False, set to True if you want to adopt a Newton method, not valid for hyperparam optim
 
     criterion = PinballLoss(quantiles)  # HuberNorm(quantiles) #PinballLoss(quantiles)  # reduction='sum'
@@ -252,8 +252,11 @@ if __name__ == "__main__":
     quantile_score_table = pd.DataFrame()
     
     for task_name in task_names:
+
+        print(f"Results related to {task_name}")
+        data = data_tasks[task_name]
         path = os.path.join(main_path, "experiments", task_name)
-    
+
         for i in range(n_ensembles):
             if train_model_start:
                 net.load_state_dict(task_params[task_name][i])

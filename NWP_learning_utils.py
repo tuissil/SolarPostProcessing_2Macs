@@ -55,7 +55,7 @@ def create_folder(path):
 # y = y_true
 # f = quantile predictions
 # tau = quantile array
-def quantile_score(y, f, tau):
+def quantile_score(y, f, tau=np.array([0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99])):
     pbs = np.zeros_like(f)
     for j in range(len(tau)):
         q = f[:, j]
@@ -74,9 +74,12 @@ class PinballLoss(nn.Module):
             loss = torch.mean(torch.max((quantile - 1) * errors, quantile * errors))
             
             # add loss for reliability plot
-            # loss = loss + 0.01 * abs(torch.mean(((target < preds[:, index]).float()))-quantile)
+            # loss_rel = 0.1*abs(torch.mean(abs(((target < preds[:, index]).float())-quantile)))   # default 0.01*
+            # loss = loss + (loss_rel**2/(loss+loss_rel))
             losses.append(loss)
-        return torch.mean(torch.stack(losses))
+        #loss_rel = quantile_score(target, preds.detach())
+        #print(f"Loss rel: {loss_rel}")
+        return torch.mean(torch.stack(losses))#+loss_rel
 
 HuberNorm_epsilon = 2e-3
 
@@ -170,7 +173,7 @@ class NWP_net(nn.Module):
 min_epoch_error = np.inf
 
 def train_model_dataloader(net, criterion, optimizer, num_epochs, train_data, vali_data, test_data, path, patience, scheduler=None, decay_steps=100, trial=None, pruner_epochs=0, pruner_max=0, pruner_sensitivity=np.inf, perfs_on_test=False, Newton_method=False, error_precision=8): #
-    torch.manual_seed(1234)  # default 42 # for riproducibility
+    #torch.manual_seed(1234)  # default 42 # for riproducibility
     date_time = datetime.now().strftime("%d%m%y%H%M%S")
     if trial is None:
         # keep last num_to_keep runs
@@ -346,13 +349,17 @@ def vali_model(net, vali_data, criterion):
     # VALIDATION
     vali_loss_batch = 0.0
 
+    loss_rel = []
+
     for X, y in vali_data:
         output = net(X)
         vali_loss = criterion(output, y)
         vali_loss_batch = vali_loss_batch + vali_loss
 
+        loss_rel.append(quantile_score(y, output.detach()))
 
-    return vali_loss_batch/len(vali_data)  # vali loss across the dataloader
+
+    return vali_loss_batch/len(vali_data)+2*np.mean(loss_rel)  # vali loss across the dataloader
 
 
 
