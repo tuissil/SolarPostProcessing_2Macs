@@ -22,7 +22,11 @@ class Stn_data:
         self.y_test = None  # array with output test dataset
         self.scaler_x = None  # sklearn.preprocessing.StandardScaler() used to scale the input
         self.scaler_y = None  # sklearn.preprocessing.StandardScaler() used to scale the output
-        self.target_test_df = None # target df for ex-post data analysis
+        self.target_test_df = None  # target df for ex-post data analysis
+        self.data_original_df = None  # original dataframe
+        self.pred_quantiles_test = None  # resulting predicted quantiles
+        self.data_reli_test = None  # data for plotting reliability plot
+        self.pred_conformance_df = None # dataframe with prediction for conformance analysis
 
 # separate the dataset in input and output
 def in_out_split(data):
@@ -50,6 +54,7 @@ def split_data(task, yr_tr, yr_te, yr_va, scale_data=True, shuffle_train=False):
         print(f"Processing station {stn}")
         stns_list[stn] = Stn_data(name=stn)
         data = pd.read_csv(os.path.join(dir, f"{stn}_obs_ECMWF_ens.csv"), sep=",", index_col=0, date_format="%Y-%m-%d %H:%M:%S")
+        stns_list[stn].data_original_df = data
 
         # Train/test split
         if shuffle_train:

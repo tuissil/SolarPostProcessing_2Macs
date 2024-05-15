@@ -74,8 +74,8 @@ class PinballLoss(nn.Module):
             loss = torch.mean(torch.max((quantile - 1) * errors, quantile * errors))
             
             # add loss for reliability plot
-            # loss_rel = 0.1*abs(torch.mean(abs(((target < preds[:, index]).float())-quantile)))   # default 0.01*
-            # loss = loss + (loss_rel**2/(loss+loss_rel))
+            #loss_rel = 0.1*abs(torch.mean(abs(((target < preds[:, index]).float())-quantile)))   # default 0.01*
+            #loss = loss + (loss_rel**2/(loss+loss_rel))
             losses.append(loss)
         #loss_rel = quantile_score(target, preds.detach())
         #print(f"Loss rel: {loss_rel}")
@@ -288,7 +288,8 @@ def train_model_dataloader(net, criterion, optimizer, num_epochs, train_data, va
             epoch_error_best_vali = vali_loss_epoch
             epoch_error_best_train = train_loss_epoch
             epoch_error_best_test = test_loss_epoch
-            optim_param = net.state_dict()
+            optim_param = (net.state_dict()).copy()
+            print(f"Epoch {epoch}: I have updated optim_param")
             optim_epoch = epoch
             counter_stop = 0
             print("Saving the model!")
@@ -296,6 +297,7 @@ def train_model_dataloader(net, criterion, optimizer, num_epochs, train_data, va
             if trial is None:
                 torch.save(net.state_dict(),
                            f"{path}/last_optim_model")
+                print(f"Epoch {epoch}: I have saved the model")
             else:
                 torch.save(net.state_dict(),
                            f"{path}/hyperparam_optim/best_model_trial_{trial.number}")
@@ -359,7 +361,7 @@ def vali_model(net, vali_data, criterion):
         loss_rel.append(quantile_score(y, output.detach()))
 
 
-    return vali_loss_batch/len(vali_data)+2*np.mean(loss_rel)  # vali loss across the dataloader
+    return vali_loss_batch/len(vali_data)+1*np.mean(loss_rel)  # vali loss across the dataloader
 
 
 
@@ -388,7 +390,7 @@ def keep_recent_files(folder_path, num_to_keep=10):
         except PermissionError:
             print(f"Permission error: Unable to remove '{item_path}'")
 
-def plot_reliability_plot(quantiles, y, pred_sorted, task_name):
+def reliability_plot(quantiles, y, pred_sorted, task_name, plot_graph=True):
     tmp_y = pd.DataFrame({"y": y.flatten()})
     tmp_quantiles = pd.DataFrame(columns=quantiles, data=pred_sorted)
     scores_res = pd.concat([tmp_y, tmp_quantiles], axis=1)
@@ -420,22 +422,23 @@ def plot_reliability_plot(quantiles, y, pred_sorted, task_name):
         data_reli = data_reli._append(pd.DataFrame({"x": [tau], "std": [std_dev], "P1": [P1], "CI50_lower": [lower50], "CI50_upper": [upper50], "CI90_lower": [lower90], "CI90_upper": [upper90]}), ignore_index=True)  #, "method": method, "stn": stn.upper()
 
     # Plot Reliability
-    fig, ax = plt.subplots(figsize=(10, 6))
-    #for method, group in data_band.groupby("method"):
-    #    ax.plot(group["x"], group["value"], label=method)
-    ax.plot([0, 1], [0, 1], linestyle="--", color="grey")
-    ax.fill_between(data_reli["x"], data_reli["CI50_lower"], data_reli["CI50_upper"], alpha=0.5, color="royalblue", label="CI50")
-    ax.fill_between(data_reli["x"], data_reli["CI90_lower"], data_reli["CI90_upper"], alpha=0.5, color="cornflowerblue", label="CI90")
-    ax.plot(data_reli["x"], data_reli["P1"], color="grey")
-    ax.scatter(data_reli["x"], data_reli["P1"], color='black', s=10, label="PICP")
-    ax.set_xlabel("Quantile level (tau)")
-    ax.set_ylabel("Coverage")
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.legend()
-    plt.grid()
-    plt.title(f"Reliability plot {task_name}")
-    plt.show()
+    if plot_graph:
+        fig, ax = plt.subplots(figsize=(10, 6))
+        #for method, group in data_band.groupby("method"):
+        #    ax.plot(group["x"], group["value"], label=method)
+        ax.plot([0, 1], [0, 1], linestyle="--", color="grey")
+        ax.fill_between(data_reli["x"], data_reli["CI50_lower"], data_reli["CI50_upper"], alpha=0.5, color="royalblue", label="CI50")
+        ax.fill_between(data_reli["x"], data_reli["CI90_lower"], data_reli["CI90_upper"], alpha=0.5, color="cornflowerblue", label="CI90")
+        ax.plot(data_reli["x"], data_reli["P1"], color="grey")
+        ax.scatter(data_reli["x"], data_reli["P1"], color='black', s=10, label="PICP")
+        ax.set_xlabel("Quantile level (tau)")
+        ax.set_ylabel("Coverage")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.legend()
+        plt.grid()
+        plt.title(f"Reliability plot {task_name}")
+        plt.show()
     return scores_res, data_reli
 
 def plot_sharpness_plot(scores_res, task_name):

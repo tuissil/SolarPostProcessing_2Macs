@@ -7,7 +7,7 @@ Created on May 07 2024
 import numpy as np
 import torch
 from NWP_QR_data_import import split_data
-from NWP_learning_utils import vali_model, DataloaderDataset, train_model_dataloader, PinballLoss, NWP_net, quantile_score, HuberNorm, create_folder, plot_reliability_plot, plot_sharpness_plot
+from NWP_learning_utils import vali_model, DataloaderDataset, train_model_dataloader, PinballLoss, NWP_net, quantile_score, HuberNorm, create_folder, reliability_plot, plot_sharpness_plot
 from pytorch_lightning import seed_everything
 import pickle
 from torch import save
@@ -33,7 +33,7 @@ main_path = os.getcwd().replace("\\", "/")
 if __name__ == "__main__":
 
 
-    seed_everything(0)  # default 0 [bon = 0, fpk=42
+    seed_everything(100)  # default 0 [bon = 0, fpk=42
 
     print("Start")
     task_names = ["bon", "dra", "fpk", "gwn", "psu", "sxf", "tbl"] #["bon", "dra", "fpk", "gwn", "psu", "sxf", "tbl"]
@@ -51,7 +51,7 @@ if __name__ == "__main__":
     train_model_start = False  # retrain the model
     exp_learning_rate = -4  # default -4
     learning_rate = 10 ** exp_learning_rate
-    num_epochs = 500  # default 200
+    num_epochs = 500  # default 500
     weight_decay_optimizer = 1e-3  # default 1e-3, L2 penalty
     decay_steps = 100  # default = 100, for learning rate scheduler
     error_precision = 4  # default: 4, number of decimals in the error
@@ -61,7 +61,7 @@ if __name__ == "__main__":
 
     n_ensembles = 1  # for ensemble NN
 
-    patience = 100  # default 50
+    patience = 100  # default 100
     Newton_method = False  # default False, set to True if you want to adopt a Newton method, not valid for hyperparam optim
 
     criterion = PinballLoss(quantiles)  # HuberNorm(quantiles) #PinballLoss(quantiles)  # reduction='sum'
@@ -88,6 +88,10 @@ if __name__ == "__main__":
     test_dataloader = {}  # this dataloader will be used to display results
 
     for task_name in task_names:
+
+        seed_everything(100)
+        #torch.manual_seed(100)
+
         print(f"Elaborating station {task_name}")
         # adjust path to save results in the correct folder
         path = f"{main_path}/experiments/{task_name}"  #os.path.join(main_path, "experiments", task_name)
@@ -132,7 +136,7 @@ if __name__ == "__main__":
             net = NWP_net(settings=settings_hyperoptim)
 
             optimizer = optim.Adam(net.parameters(), lr=10**exp_learning_rate, weight_decay=weight_decay_optimizer)
-            scheduler = lr_scheduler.ExponentialLR(optimizer=optimizer, gamma=0.9, verbose=True)
+            scheduler = lr_scheduler.ExponentialLR(optimizer=optimizer, gamma=0.9, verbose=True)  # default gamma = 0.95
 
             vali_error = train_model_dataloader(
                 net=net,
@@ -250,7 +254,7 @@ if __name__ == "__main__":
     print("Optimization results")
     scale_back_data_for_plot = True
     quantile_score_table = pd.DataFrame()
-    
+
     for task_name in task_names:
 
         print(f"Results related to {task_name}")
@@ -262,7 +266,7 @@ if __name__ == "__main__":
                 net.load_state_dict(task_params[task_name][i])
             else:
                 net = NWP_net(settings=settings)
-                net.load_state_dict(torch.load(f"{path}/last_optim_model_his"))
+                net.load_state_dict(torch.load(f"{path}/last_optim_model"))
     
             # compute predictions
             for X, y in test_dataloader[task_name]:
@@ -282,7 +286,7 @@ if __name__ == "__main__":
     
         pred_sorted = np.sort(pred)  # contains quantiles prediction
     
-    
+        '''
         # plot predictions quantiles
         plt.figure()
         plt.plot(y, 'b')
@@ -292,6 +296,7 @@ if __name__ == "__main__":
         plt.title(f"Predictions quantiles {task_name}")
         plt.grid()
         plt.show()
+        '''
     
         # quantile score computation
         quantile_score_table[task_name] = [quantile_score(
@@ -303,18 +308,38 @@ if __name__ == "__main__":
        
     
         # create dataframe with computed predictions
-        # scores_res contain true measures and quantile predictions
+        # scores_quantiles contain true measures and quantile predictions
         # data_reli contains data for plotting the reliability plot
-        scores_res, data_reli = plot_reliability_plot(
+        data_tasks[task_name].pred_quantiles_test, data_tasks[task_name].data_reli_test = reliability_plot(
             quantiles=quantiles, 
             y=y, 
             pred_sorted=pred_sorted,
-            task_name=task_name)
+            task_name=task_name,
+            plot_graph=True
+        )
     
         # sharpness diagram
-        plot_sharpness_plot(scores_res, task_name)
-    
-    
+        plot_sharpness_plot(data_tasks[task_name].pred_quantiles_test, task_name)
+
+        # Save data for conformance predictions
+        data_conformance = data_tasks[task_name].data_original_df["2019-10-01 00:00:00":]
+        x_conformance_scaled = data_tasks[task_name].scaler_x.transform(data_conformance[[col for col in data_conformance.columns if 'E_' in col]])
+        pred_conformance_scaled = net(torch.Tensor(x_conformance_scaled)).detach()
+        pred_conformance = np.sort(data_tasks[task_name].scaler_y.inverse_transform(pred_conformance_scaled))
+
+        data_tasks[task_name].pred_conformance_df = pd.DataFrame(
+            index=data_conformance.index,
+            columns=["y"]+['Q' + str(quantile) for quantile in quantiles],
+            data=np.concatenate((data_conformance["observations"].values.reshape(-1,1), pred_conformance), axis=1))
+
+        '''
+        # if same predictions but scaled
+        pred_conformance_df_scaled = pd.DataFrame(index=data_conformance.index,
+                                                  columns=["y"]+['Q' + str(quantile) for quantile in quantiles],
+                                                  data=np.concatenate((data_tasks[task_name].scaler_y.transform(data_conformance["observations"].values.reshape(-1,1)),
+                                                           pred_conformance_scaled), axis=1))
+        '''
+
         # export data to csv (to use in R code)
         '''
         data_CQRA = pd.read_csv("C:\\Users\\tuissi\\Documents\\NWP\\2Macs_code\\SolarPostProcessing_pytorch\\data\\bon_CQRA_2MACS_2019_2020.txt", sep='\t', index_col=0,  date_format="%Y-%m-%d %H:%M:%S")
@@ -322,6 +347,6 @@ if __name__ == "__main__":
         data_CQRA_2020[[col for col in data_CQRA_2020 if 'QRNN8.' in col]] = pred_sorted
         data_CQRA_2020.to_csv("C:\\Users\\tuissi\\Documents\\NWP\\code\\QuantileFcstComb-main\\Data\\bon_CQRA_2MACS_2020.txt", sep='\t', date_format="%Y-%m-%d %H:%M:%S")
         '''
-        
+
     print(quantile_score_table)
     print("End execution")
