@@ -259,7 +259,7 @@ if __name__ == "__main__":
 
         print(f"Results related to {task_name}")
         data = data_tasks[task_name]
-        path = os.path.join(main_path, "experiments", task_name)
+        path = os.path.join(main_path, "experiments_github", task_name)
 
         for i in range(n_ensembles):
             if train_model_start:
