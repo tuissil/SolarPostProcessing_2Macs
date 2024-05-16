@@ -26,6 +26,8 @@ import shutil
 import scipy
 import seaborn as sns
 
+from copy import deepcopy
+
 def create_folder(path):
     try:
         os.makedirs(f"{path}/execution")
@@ -288,8 +290,7 @@ def train_model_dataloader(net, criterion, optimizer, num_epochs, train_data, va
             epoch_error_best_vali = vali_loss_epoch
             epoch_error_best_train = train_loss_epoch
             epoch_error_best_test = test_loss_epoch
-            optim_param = (net.state_dict()).copy()
-            print(f"Epoch {epoch}: I have updated optim_param")
+            optim_param = deepcopy(net.state_dict())
             optim_epoch = epoch
             counter_stop = 0
             print("Saving the model!")
@@ -297,7 +298,6 @@ def train_model_dataloader(net, criterion, optimizer, num_epochs, train_data, va
             if trial is None:
                 torch.save(net.state_dict(),
                            f"{path}/last_optim_model")
-                print(f"Epoch {epoch}: I have saved the model")
             else:
                 torch.save(net.state_dict(),
                            f"{path}/hyperparam_optim/best_model_trial_{trial.number}")

@@ -33,7 +33,7 @@ main_path = os.getcwd().replace("\\", "/")
 if __name__ == "__main__":
 
 
-    seed_everything(100)  # default 0 [bon = 0, fpk=42
+    seed_everything(1234)  # default 0 [bon = 0, fpk=42
 
     print("Start")
     task_names = ["bon", "dra", "fpk", "gwn", "psu", "sxf", "tbl"] #["bon", "dra", "fpk", "gwn", "psu", "sxf", "tbl"]
@@ -48,7 +48,7 @@ if __name__ == "__main__":
         [0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99])  # 0.01, 0.05, 0.95, 0.99
     exp_hidden_size = 3  # default 3
 
-    train_model_start = False  # retrain the model
+    train_model_start = True  # retrain the model
     exp_learning_rate = -4  # default -4
     learning_rate = 10 ** exp_learning_rate
     num_epochs = 500  # default 500
@@ -82,6 +82,8 @@ if __name__ == "__main__":
                       yr_tr=yr_tr,
                       yr_va=yr_va,
                       yr_te=yr_te,
+                      va_te_date_split="2019-09-01 00:00:00",
+                      hours_range=range(8, 17+1),
                       scale_data=scale_data,
                       shuffle_train=shuffle_train)
 
@@ -89,7 +91,7 @@ if __name__ == "__main__":
 
     for task_name in task_names:
 
-        seed_everything(100)
+        seed_everything(1234)
         #torch.manual_seed(100)
 
         print(f"Elaborating station {task_name}")
@@ -259,14 +261,14 @@ if __name__ == "__main__":
 
         print(f"Results related to {task_name}")
         data = data_tasks[task_name]
-        path = os.path.join(main_path, "experiments_github", task_name)
+        path = os.path.join(main_path, "experiments", task_name)
 
         for i in range(n_ensembles):
             if train_model_start:
                 net.load_state_dict(task_params[task_name][i])
             else:
                 net = NWP_net(settings=settings)
-                net.load_state_dict(torch.load(f"{path}/last_optim_model"))
+                net.load_state_dict(torch.load(f"{path}/last_optim_model_seed0"))
     
             # compute predictions
             for X, y in test_dataloader[task_name]:
@@ -322,15 +324,15 @@ if __name__ == "__main__":
         plot_sharpness_plot(data_tasks[task_name].pred_quantiles_test, task_name)
 
         # Save data for conformance predictions
-        data_conformance = data_tasks[task_name].data_original_df["2019-10-01 00:00:00":]
-        x_conformance_scaled = data_tasks[task_name].scaler_x.transform(data_conformance[[col for col in data_conformance.columns if 'E_' in col]])
+        x_conformance_scaled = data_tasks[task_name].x_test
         pred_conformance_scaled = net(torch.Tensor(x_conformance_scaled)).detach()
         pred_conformance = np.sort(data_tasks[task_name].scaler_y.inverse_transform(pred_conformance_scaled))
+        y_test_not_scaled = data_tasks[task_name].scaler_y.inverse_transform(data_tasks[task_name].y_test.reshape(-1,1))
 
         data_tasks[task_name].pred_conformance_df = pd.DataFrame(
-            index=data_conformance.index,
-            columns=["y"]+['Q' + str(quantile) for quantile in quantiles],
-            data=np.concatenate((data_conformance["observations"].values.reshape(-1,1), pred_conformance), axis=1))
+            index=data_tasks[task_name].data_te.index,
+            columns=["y"]+[str(quantile) for quantile in quantiles],
+            data=np.concatenate((y_test_not_scaled, pred_conformance), axis=1))
 
         '''
         # if same predictions but scaled

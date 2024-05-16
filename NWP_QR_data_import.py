@@ -22,7 +22,8 @@ class Stn_data:
         self.y_test = None  # array with output test dataset
         self.scaler_x = None  # sklearn.preprocessing.StandardScaler() used to scale the input
         self.scaler_y = None  # sklearn.preprocessing.StandardScaler() used to scale the output
-        self.target_test_df = None  # target df for ex-post data analysis
+        self.data_te = None # test dataset for conformance prediction
+        #self.target_test_df = None  # target df for ex-post data analysis
         self.data_original_df = None  # original dataframe
         self.pred_quantiles_test = None  # resulting predicted quantiles
         self.data_reli_test = None  # data for plotting reliability plot
@@ -45,8 +46,8 @@ def in_out_split(data):
 # Create dictionary with instances of class Stn_data
 # Associate to each station the corresponding train, (validation), and test I/O dataset as array in scaled or unscaled
 # form according to parameter scale_data
-def split_data(task, yr_tr, yr_te, yr_va, scale_data=True, shuffle_train=False):
-    dir =os.path.join(os.getcwd(), 'data')
+def split_data(task, yr_tr, yr_te, yr_va, va_te_date_split, hours_range, scale_data=True, shuffle_train=False):
+    dir =os.path.join(os.getcwd(), 'data_zenith95')  # default 'data'
     stns = task
 
     stns_list = {}
@@ -55,16 +56,26 @@ def split_data(task, yr_tr, yr_te, yr_va, scale_data=True, shuffle_train=False):
         stns_list[stn] = Stn_data(name=stn)
         data = pd.read_csv(os.path.join(dir, f"{stn}_obs_ECMWF_ens.csv"), sep=",", index_col=0, date_format="%Y-%m-%d %H:%M:%S")
         stns_list[stn].data_original_df = data
-
+        
+        # count different hours observations
+        # data.index.hour.value_counts()
+        
         # Train/test split
         if shuffle_train:
             data_tr = data[data.index.year.isin(yr_tr)].sample(frac=1)
         else:
             data_tr = data[data.index.year.isin(yr_tr)]
-        data_te = data[data.index.year.isin(yr_te)]
-        data_va = data[data.index.year.isin(yr_va)]
-        target_test_df = data_te[['observations']].copy()
-        target_test_df.rename(columns={'observations':task}, inplace=True)
+
+        
+        # validation data
+        data_va = data[data.index.year.isin(yr_va)][:va_te_date_split]  # data[data.index.year.isin(yr_va)]
+        
+        # test data
+        data_te = data[data.index.year.isin([yr_va[0], yr_te[0]])][va_te_date_split:]
+        data_te = data_te[data_te.index.hour.isin(hours_range)] # modified for conformance  data[data.index.year.isin(yr_te)]
+        
+        #target_test_df = data_te[['observations']].copy()
+        #target_test_df.rename(columns={'observations':stn}, inplace=True)
         if scale_data:
             scaler_output = MinMaxScaler().fit(
                 data_tr["observations"].values.reshape(-1, 1))  # scaler for just the output
@@ -88,7 +99,7 @@ def split_data(task, yr_tr, yr_te, yr_va, scale_data=True, shuffle_train=False):
         stns_list[stn].x_train, stns_list[stn].y_train = in_out_split(data_tr)
         stns_list[stn].x_vali, stns_list[stn].y_vali = in_out_split(data_va)
         stns_list[stn].x_test, stns_list[stn].y_test = in_out_split(data_te)
-        stns_list[stn].target_test_df = target_test_df
+        stns_list[stn].data_te = data_te
 
     return stns_list
 
