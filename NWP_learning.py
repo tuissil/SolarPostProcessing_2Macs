@@ -261,14 +261,14 @@ if __name__ == "__main__":
 
         print(f"Results related to {task_name}")
         data = data_tasks[task_name]
-        path = os.path.join(main_path, "experiments", task_name)
+        path = os.path.join(main_path, "experiments_github", task_name)
 
         for i in range(n_ensembles):
             if train_model_start:
                 net.load_state_dict(task_params[task_name][i])
             else:
                 net = NWP_net(settings=settings)
-                net.load_state_dict(torch.load(f"{path}/last_optim_model_seed0"))
+                net.load_state_dict(torch.load(f"{path}/last_optim_model"))
     
             # compute predictions
             for X, y in test_dataloader[task_name]:
