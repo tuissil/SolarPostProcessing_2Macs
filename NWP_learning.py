@@ -24,6 +24,7 @@ import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2' # to remove info and warnings
 import datetime
 import matplotlib
+from tools.cp_tools import compute_cqr, compute_pid, compute_cp
 import matplotlib.pyplot as plt
 matplotlib.use("TkAgg")
 
@@ -36,7 +37,7 @@ if __name__ == "__main__":
     seed_everything(1234)  # default 0 [bon = 0, fpk=42
 
     print("Start")
-    task_names = ["bon", "dra", "fpk", "gwn", "psu", "sxf", "tbl"] #["bon", "dra", "fpk", "gwn", "psu", "sxf", "tbl"]
+    task_names = ["dra"] #["bon", "dra", "fpk", "gwn", "psu", "sxf", "tbl"]
     yr_tr = [2017, 2018]
     yr_va = [2019]
     yr_te = [2020]
@@ -48,7 +49,7 @@ if __name__ == "__main__":
         [0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99])  # 0.01, 0.05, 0.95, 0.99
     exp_hidden_size = 3  # default 3
 
-    train_model_start = True  # retrain the model
+    train_model_start = False  # retrain the model
     exp_learning_rate = -4  # default -4
     learning_rate = 10 ** exp_learning_rate
     num_epochs = 500  # default 500
@@ -307,8 +308,7 @@ if __name__ == "__main__":
             tau=quantiles
             )
         ]
-       
-    
+
         # create dataframe with computed predictions
         # scores_quantiles contain true measures and quantile predictions
         # data_reli contains data for plotting the reliability plot
@@ -321,7 +321,7 @@ if __name__ == "__main__":
         )
     
         # sharpness diagram
-        plot_sharpness_plot(data_tasks[task_name].pred_quantiles_test, task_name)
+        #plot_sharpness_plot(data_tasks[task_name].pred_quantiles_test, task_name)
 
         # Save data for conformance predictions
         x_conformance_scaled = data_tasks[task_name].x_test
@@ -331,16 +331,16 @@ if __name__ == "__main__":
 
         data_tasks[task_name].pred_conformance_df = pd.DataFrame(
             index=data_tasks[task_name].data_te.index,
-            columns=["y"]+[str(quantile) for quantile in quantiles],
+            columns=["y"]+[quantile for quantile in quantiles],
             data=np.concatenate((y_test_not_scaled, pred_conformance), axis=1))
 
-        '''
+
         # if same predictions but scaled
-        pred_conformance_df_scaled = pd.DataFrame(index=data_conformance.index,
-                                                  columns=["y"]+['Q' + str(quantile) for quantile in quantiles],
-                                                  data=np.concatenate((data_tasks[task_name].scaler_y.transform(data_conformance["observations"].values.reshape(-1,1)),
-                                                           pred_conformance_scaled), axis=1))
-        '''
+        pred_conformance_df_scaled = pd.DataFrame(index=data_tasks[task_name].data_te.index,
+                                                  columns=["y"]+[quantile for quantile in quantiles],
+                                                  data=np.concatenate((data_tasks[task_name].y_test.reshape(-1,1),
+                                                           pred_conformance_scaled.numpy()), axis=1))
+
 
         # export data to csv (to use in R code)
         '''
@@ -349,6 +349,78 @@ if __name__ == "__main__":
         data_CQRA_2020[[col for col in data_CQRA_2020 if 'QRNN8.' in col]] = pred_sorted
         data_CQRA_2020.to_csv("C:\\Users\\tuissi\\Documents\\NWP\\code\\QuantileFcstComb-main\\Data\\bon_CQRA_2MACS_2020.txt", sep='\t', date_format="%Y-%m-%d %H:%M:%S")
         '''
+
+        #------------------------------------------------------------
+        # configs
+        #------------------------------------------------------------
+        # TODO:
+        # definire split validation con test che comprende calibration subset a seconda della definizione nel setting
+        # definire grid per lanciare esperimenti sulle diverse configurazioni e salvare risultati pickle
+        # fare prove con diversi orizzonti passato
+        # implementare calcolo score sui modelli conformal
+
+        # future investigazioni:
+            # autotuning pid (ste)
+            # fare prove con senza standardizzazione (valutare "detrending")
+
+        step_wise_cp = True
+        cp_method = 'pid' #'cp', 'cqr', 'pid'
+        # con pid usare step_wise_cp = True perchè non ho ancora implementato la versione non stepwise
+        pid_lr = 0.01
+        pid_KI = 10
+
+        if step_wise_cp:
+            settings_cp = {
+                'target_name': 'y',
+                'num_cali_samples': 122,
+                'target_alpha': [0.02, 0.1, 0.2, 0.4, 0.6, 0.8],
+                'pred_horiz': 10,
+                'num_ense': 1,
+                'stepwise': True
+            }
+        else:
+            settings_cp = {
+                'target_name': 'y',
+                'num_cali_samples': 6,
+                'target_alpha': [0.02, 0.1, 0.2, 0.4, 0.6, 0.8],
+                'pred_horiz': 10,
+                'num_ense': 1,
+                'stepwise': False
+            }
+
+        # numero_giorni_pretest= settings['num_cali_samples']
+        # va_te_date_split = "2019-09-01 00:00:00" -> va_te_date_split = inizio test (gennaio 2020)  - numero_giorni_pretest
+
+
+        results_cp = {}
+        df = data_tasks[task_name].pred_conformance_df
+
+        #df=pred_conformance_df_scaled
+        if cp_method == 'cp':
+            results_cp[task_name] = compute_cp([df], settings=settings_cp)
+        elif cp_method == 'cqr':
+            results_cp[task_name] = compute_cp([df], settings=settings_cp)
+        elif cp_method == 'pid':
+            results_cp[task_name] = compute_pid([df], settings=settings_cp, lr=pid_lr, KI=pid_KI)
+
+        _, _ = reliability_plot(
+            quantiles=quantiles,
+            y=results_cp[task_name]['y'].to_numpy().reshape(-1,1),
+            pred_sorted=results_cp[task_name][quantiles.tolist()].to_numpy(),
+            task_name=task_name,
+            plot_graph=True
+        )
+
+        _, _ = reliability_plot(
+            quantiles=quantiles,
+            y=df['y'].to_numpy().reshape(-1,1),
+            pred_sorted=df[quantiles.tolist()].to_numpy(),
+            task_name=task_name,
+            plot_graph=True
+        )
+        results_cp[task_name].plot()
+        print('cp done')
+
 
     print(quantile_score_table)
     print("End execution")
