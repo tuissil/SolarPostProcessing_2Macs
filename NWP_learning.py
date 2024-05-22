@@ -51,10 +51,6 @@ if __name__ == "__main__":
     pred_horiz = 9  # default 9
 
 
-    step_wise_cp = True
-
-
-
     # create truth table for the proofs
     methods = ['cp', 'cqr', 'pid'] #['cp', 'cqr', 'pid']
     step_wise_cp_options = [True, False]
