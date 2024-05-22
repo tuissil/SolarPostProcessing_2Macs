@@ -276,7 +276,7 @@ def train_hyperoptim(settings_optimization):
 
     return settings, data_tasks
 
-def compute_metrics(data_tasks, settings_optimization, settings, settings_cp, scale_back_data_for_plot=True):
+def compute_metrics(data_tasks, settings_optimization, additional_settings, settings_cp, decimals_quantile_score, scale_back_data=True):
     quantile_score_table = pd.DataFrame()
     quantile_score_table_conformal = pd.DataFrame()
 
@@ -287,7 +287,7 @@ def compute_metrics(data_tasks, settings_optimization, settings, settings_cp, sc
         path = os.path.join(settings_optimization['main_path'], "experiments", str(settings_optimization['num_cali_samples']), task_name)
 
         for i in range(settings_optimization['n_ensembles']):
-            net = NWP_net(settings=settings)
+            net = NWP_net(settings=additional_settings)
             if settings_optimization["train_model_start"]:
                 net.load_state_dict(data_tasks[task_name].task_params[i])
             else:
@@ -305,9 +305,11 @@ def compute_metrics(data_tasks, settings_optimization, settings, settings_cp, sc
 
         pred = pred / settings_optimization['n_ensembles']
 
-        if scale_back_data_for_plot:
+        if scale_back_data:
             y = data.scaler_y.inverse_transform(y.reshape(-1, 1))
             pred = data.scaler_y.inverse_transform(pred)
+        else:
+            y = np.array(y).reshape(-1, 1)
 
         pred_sorted = np.sort(pred)  # contains quantiles prediction
 
@@ -315,11 +317,11 @@ def compute_metrics(data_tasks, settings_optimization, settings, settings_cp, sc
         samples_to_consider = len(data_tasks[task_name].data_te.index[data_tasks[task_name].data_te.index.year == data_tasks[task_name].year_te[0]])  # for a fair comparison of the quantile score
 
         # quantile score computation before calibration
-        quantile_score_table[task_name] = [quantile_score(
+        quantile_score_table[task_name] = [np.round(quantile_score(
             y=y.flatten()[-samples_to_consider:],
             f=pred_sorted[-samples_to_consider:],
             tau=settings_optimization['quantiles']
-        )
+        ), decimals_quantile_score)
         ]
 
         # create dataframe with computed predictions
@@ -337,14 +339,17 @@ def compute_metrics(data_tasks, settings_optimization, settings, settings_cp, sc
         # Save data for conformal predictions
         x_conformal_scaled = data_tasks[task_name].x_test
         pred_conformal_scaled = net(torch.Tensor(x_conformal_scaled)).detach()
-        pred_conformal = np.sort(data_tasks[task_name].scaler_y.inverse_transform(pred_conformal_scaled))[-samples_to_consider:]
-        y_test_not_scaled = data_tasks[task_name].scaler_y.inverse_transform(
-            data_tasks[task_name].y_test.reshape(-1, 1))[-samples_to_consider:]
+        if scale_back_data:
+            pred_conformal = np.sort(data_tasks[task_name].scaler_y.inverse_transform(pred_conformal_scaled))[-samples_to_consider:]
+            y_test = data_tasks[task_name].scaler_y.inverse_transform(data_tasks[task_name].y_test.reshape(-1, 1))[-samples_to_consider:]
+        else:
+            pred_conformal = np.sort(pred_conformal_scaled)[-samples_to_consider:]
+            y_test = data_tasks[task_name].y_test.reshape(-1, 1)[-samples_to_consider:]
 
         data_tasks[task_name].pred_conformal_df = pd.DataFrame(
             index=data_tasks[task_name].data_te.index[-samples_to_consider:],
             columns=["y"] + [quantile for quantile in settings_optimization["quantiles"]],
-            data=np.concatenate((y_test_not_scaled, pred_conformal), axis=1))
+            data=np.concatenate((y_test, pred_conformal), axis=1))
 
         '''
         # if same predictions but scaled
@@ -375,11 +380,11 @@ def compute_metrics(data_tasks, settings_optimization, settings, settings_cp, sc
             results_cp[task_name] = compute_pid([df], settings=settings_cp, lr=settings_cp['pid_lr'], KI=settings_cp['pid_KI'])
 
         # compute quantile score after conformal
-        quantile_score_table_conformal[task_name] = [quantile_score(
+        quantile_score_table_conformal[task_name] = [np.round(quantile_score(
             y=results_cp[task_name]['y'].to_numpy(),
             f=results_cp[task_name][settings_optimization["quantiles"].tolist()].to_numpy(),
             tau=settings_optimization["quantiles"]
-            )
+            ), decimals_quantile_score)
         ]
         data_tasks[task_name].pred_after_conformal_df = results_cp[task_name]
         # sharpness plot after conformal
@@ -423,7 +428,7 @@ def quantile_score(y, f, tau=np.array([0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6,
     for j in range(len(tau)):
         q = f[:, j]
         pbs[:, j] = np.where(y >= q, tau[j] * (y - q), (1 - tau[j]) * (q - y))
-    return round(np.mean(pbs), 1)
+    return np.mean(pbs)
 
 class PinballLoss(nn.Module):
     def __init__(self, quantiles):
@@ -799,9 +804,9 @@ def reliability_plot(quantiles, y, pred_sorted, task_name, plot_graph=True, conf
         ax.legend()
         plt.grid()
         if conformal_title:
-            plt.title(f"Reliability plot {task_name}")
-        else:
             plt.title(f"Reliability plot {task_name} - Conformal analysis")
+        else:
+            plt.title(f"Reliability plot {task_name}")
         plt.show()
     return scores_res, data_reli
 

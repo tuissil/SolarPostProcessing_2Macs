@@ -145,7 +145,11 @@ if __name__ == "__main__":
 
         # RESULTS
         print("Optimization results")
-        scale_back_data_for_plot = True
+        scale_back_data = False  # True if you want to work with unscaled data
+        if scale_back_data:
+            decimals_quantile_score = 1
+        else:
+            decimals_quantile_score = 4
 
         # compute_metrics computes
         # self.pred_quantiles_test = None  # resulting predicted quantiles
@@ -155,7 +159,14 @@ if __name__ == "__main__":
         # self.test_dataloader = None  # test dataloader for prediction computation
         # self.pred_after_conformal_df = None  # predictions quantiles after conformance
 
-        quantile_score_table, quantile_score_table_conformal = compute_metrics(data_tasks, settings_optimization, additional_settings, settings_cp, scale_back_data_for_plot)
+        quantile_score_table, quantile_score_table_conformal = compute_metrics(
+            data_tasks=data_tasks,
+            settings_optimization=settings_optimization,
+            additional_settings=additional_settings,
+            settings_cp=settings_cp,
+            scale_back_data=scale_back_data,
+            decimals_quantile_score=decimals_quantile_score)
+
         truth_table["quantile_score"][i] = quantile_score_table.to_dict()
         truth_table["quantile_score_conformal"][i] = quantile_score_table_conformal.to_dict()
 
