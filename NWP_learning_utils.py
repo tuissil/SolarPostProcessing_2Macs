@@ -27,6 +27,47 @@ import scipy
 import seaborn as sns
 
 from copy import deepcopy
+import itertools
+
+import optuna
+from torch import nn
+import torch.optim as optim
+from torch.utils.data import DataLoader
+import torch.optim.lr_scheduler as lr_scheduler
+import pickle
+from torch import save
+from datetime import datetime, timedelta
+import os
+import glob
+from torch.utils.tensorboard import SummaryWriter
+import matplotlib
+import matplotlib.pyplot as plt
+matplotlib.use("TkAgg")
+from NWP_QR_data_import import split_data
+from pytorch_lightning import seed_everything
+from tools.cp_tools import compute_cqr, compute_pid, compute_cp
+
+class InvalidNumCaliSamples(Exception):
+    pass
+
+
+def truth_table(methods, step_wise_cp_options, num_cali_samples_true, num_cali_samples_false):
+    # Generate all combinations of the parameters
+    combinations = []
+    for method, step_wise_cp in itertools.product(methods, step_wise_cp_options):
+        if step_wise_cp:
+            for num_cali_samples in num_cali_samples_true:
+                combinations.append((method, step_wise_cp, num_cali_samples))
+        else:
+            for num_cali_samples in num_cali_samples_false:
+                if method != "pid":
+                    combinations.append((method, step_wise_cp, num_cali_samples))
+
+    # Convert the combinations into a pandas DataFrame
+    columns = ['method', 'step_wise_cp', 'num_cali_samples']
+    df = pd.DataFrame(combinations, columns=columns)
+
+    return df
 
 def create_folder(path):
     try:
@@ -51,6 +92,327 @@ def create_folder(path):
     for f in files:
         os.remove(f)
     return
+
+def train_hyperoptim(settings_optimization):
+    # numero_giorni_pretest= settings['num_cali_samples']
+    # va_te_date_split = "2019-09-01 00:00:00" -> va_te_date_split = inizio test (gennaio 2020)  - numero_giorni_pretest
+    va_te_date_split = datetime.strftime(datetime.strptime("2020-01-01 00:00:00", "%Y-%m-%d %H:%M:%S") + timedelta(days=-settings_optimization["num_cali_samples"]),"%Y-%m-%d %H:%M:%S")
+
+    task_params = {}  # dict where to save all the optimal params for each station
+
+    # read NWP data
+    data_tasks = split_data(task=settings_optimization["task_names"],
+                      yr_tr=settings_optimization["yr_tr"],
+                      yr_va=settings_optimization["yr_va"],
+                      yr_te=settings_optimization["yr_te"],
+                      va_te_date_split=va_te_date_split,
+                      hours_range=range(9, 17+1), # default range(9, 17+1)
+                      scale_data=settings_optimization["scale_data"],
+                      shuffle_train=settings_optimization["shuffle_train"])
+
+
+    for task_name in settings_optimization["task_names"]:
+
+        seed_everything(settings_optimization["initial_seed"])
+        #torch.manual_seed(100)
+
+        print(f"Elaborating station {task_name}")
+        # adjust path to save results in the correct folder
+        path = f"{settings_optimization['main_path']}/experiments/{settings_optimization['num_cali_samples']}/{task_name}"  #os.path.join(main_path, "experiments", task_name)
+
+        #writer = SummaryWriter(os.path.join(path, "runs"))
+
+        # create apposite folder to save results inside task_name folder
+        create_folder(path)
+
+        # select data related to the current station
+        data = data_tasks[task_name]
+
+        settings = {
+            "input_size": data.x_train.shape[1],
+            "hidden_size": 2 ** settings_optimization["exp_hidden_size"],  # default 2**3
+            "out_size": len(settings_optimization["quantiles"]),
+            "n_hidden_layers": settings_optimization["num_hidden_layers"],  # default 1
+            "linear_map": False
+        }
+
+        # Hyperparams
+        train_dataloader = DataLoader(DataloaderDataset(data.x_train.astype('float32'), data.y_train.astype('float32')), batch_size=settings_optimization["batch_size"], shuffle=settings_optimization["shuffle_dataloader"])
+        vali_dataloader = DataLoader(DataloaderDataset(data.x_vali.astype('float32'), data.y_vali.astype('float32')), batch_size=settings_optimization["batch_size"])
+        test_dataloader = DataLoader(DataloaderDataset(data.x_test.astype('float32'), data.y_test.astype('float32')), batch_size=len(data.x_test))
+
+        def objective(trial):
+            torch.manual_seed(settings_optimization["initial_seed"])
+            exp_learning_rate = trial.suggest_int("exp_learning_rate", -6, -3)  # default -5, -1
+            exp_hidden_size = trial.suggest_int("exp_hidden_size", 1, 5, step=1)  # default: 1, 5
+            num_layers = trial.suggest_int("num_layers", 1, 5, step=1)  # default: 1, 5
+
+            settings_hyperoptim = {
+                "input_size": settings["input_size"],
+                "hidden_size": 2**exp_hidden_size,
+                "out_size": settings["out_size"],
+                "n_hidden_layers": num_layers,
+                "linear_map": settings["linear_map"]
+            }
+
+            print(f"learning rate: 10^{exp_learning_rate}, hidden_dim: {2 ** exp_hidden_size}, num_layers: {num_layers}")
+
+            net = NWP_net(settings=settings_hyperoptim)
+
+            optimizer = optim.Adam(net.parameters(), lr=10**exp_learning_rate, weight_decay=settings_optimization["weight_decay_optimizer"])
+            scheduler = lr_scheduler.ExponentialLR(optimizer=optimizer, gamma=0.9, verbose=True)  # default gamma = 0.95
+
+            vali_error = train_model_dataloader(
+                net=net,
+                criterion=settings_optimization["criterion"],
+                optimizer=optimizer,
+                scheduler=scheduler, #######scheduler,
+                decay_steps=settings_optimization["decay_steps"],  # used only if scheduler is present
+                num_epochs=settings_optimization["num_epochs_hyperoptim"],
+                train_data=train_dataloader,
+                vali_data=vali_dataloader,
+                test_data=test_dataloader,
+                patience=settings_optimization["patience_hyperoptim"],
+                path=path,
+                Newton_method=settings_optimization["Newton_method"],  # set to True if you want to use a Newton method
+                error_precision=settings_optimization["error_precision"],  # number of decimals of the error
+                trial=trial,
+                pruner_epochs=settings_optimization["pruner_epochs"],
+                pruner_max=settings_optimization["pruner_max"],
+                pruner_sensitivity=settings_optimization["pruner_sensitivity"],
+            )
+            if trial.should_prune():
+                raise optuna.exceptions.TrialPruned()
+
+            return vali_error
+
+
+        if settings_optimization["hyper_param_opt"]:
+
+            study = optuna.create_study(direction="minimize")
+
+            # initial guess
+            study.enqueue_trial({"exp_learning_rate": exp_learning_rate, "exp_hidden_size": exp_hidden_size, "num_layers": settings["n_hidden_layers"]})  # initial guess
+
+            study.optimize(objective, n_trials=settings_optimization["n_trials"])
+
+            trials = study.trials_dataframe()
+            pruned_trials = trials[trials["state"] == "PRUNED"]
+            complete_trials = trials[trials["state"] == "COMPLETE"]
+
+            print("Study statistics: ")
+            print("  Number of finished trials: ", len(study.trials))
+            print("  Number of pruned trials: ", len(pruned_trials))
+            print("  Number of complete trials: ", len(complete_trials))
+
+            trial = study.best_trial
+            print(f"Best trial:{trial.number}")
+
+            print("  Value: ", trial.value)
+
+            # print best hyperparams
+            print("  Params: ")
+            for key, value in trial.params.items():
+                print("    {}: {}".format(key, value))
+
+            exp_learning_rate = trial.params["exp_learning_rate"]
+            exp_hidden_size = trial.params["exp_hidden_size"]
+            num_layers = trial.params["num_layers"]
+
+            settings_hyperoptim_final = {
+                "input_size": settings["input_size"],
+                "hidden_size": 2 ** exp_hidden_size,
+                "out_size": settings["out_size"],
+                "n_hidden_layers": num_layers,
+                "linear_map": settings["linear_map"]
+            }
+
+            net = NWP_net(settings=settings_hyperoptim_final)
+
+            optimizer = optim.Adam(net.parameters(), lr=10**exp_learning_rate, weight_decay=settings_optimization["weight_decay_optimizer"])
+
+            settings = settings_hyperoptim_final
+
+
+        # TRAIN WITHOUT OPTUNA
+        #net.load_state_dict(torch.load(f"{path}/last_optim_model_cogeneration"))
+        #optim_param = train_model(net=net, criterion=criterion, optimizer=optimizer, patience=patience, num_epochs=num_epochs, training_data=training_data, vali_data=vali_data, enc_seq_len=enc_seq_len)
+
+        optim_param = {}
+
+        if settings_optimization["train_model_start"]:
+            for i in range(settings_optimization["n_ensembles"]):
+
+                net = NWP_net(settings=settings)
+
+                if settings_optimization["Newton_method"]:
+                    optimizer = optim.LBFGS(net.parameters(), lr=1e-4, tolerance_grad=1e-3, tolerance_change=1e-5,
+                                            line_search_fn='strong_wolfe')
+                else:
+                    optimizer = optim.Adam(net.parameters(), lr=10**settings_optimization["exp_learning_rate"], weight_decay=settings_optimization["weight_decay_optimizer"])
+
+                scheduler = lr_scheduler.ExponentialLR(optimizer=optimizer, gamma=0.9,
+                                                       verbose=True)  # gamma = 1 to deactivate the scheduler
+
+                optim_param[i] = train_model_dataloader(
+                    net=net,
+                    criterion=settings_optimization["criterion"],
+                    optimizer=optimizer,
+                    scheduler=scheduler, #######scheduler,
+                    decay_steps=settings_optimization["decay_steps"],  # used only if scheduler is present
+                    num_epochs=settings_optimization["num_epochs"],
+                    train_data=train_dataloader,
+                    vali_data=vali_dataloader,
+                    test_data=test_dataloader,
+                    patience=settings_optimization["patience"],
+                    path=path,
+                    Newton_method=settings_optimization["Newton_method"],  # set to True if you want to use a Newton method
+                    error_precision=settings_optimization["error_precision"],  # number of decimals of the error
+                )
+            # optim_param according to the validation set
+            #torch.save(net.state_dict(), f"{path}/last_optim_model_his")
+            data_tasks[task_name].task_params = optim_param
+
+        data_tasks[task_name].test_dataloader = test_dataloader
+
+    return settings, data_tasks
+
+def compute_metrics(data_tasks, settings_optimization, settings, settings_cp, scale_back_data_for_plot=True):
+    quantile_score_table = pd.DataFrame()
+    quantile_score_table_conformal = pd.DataFrame()
+
+    for task_name in settings_optimization["task_names"]:
+
+        print(f"Results related to {task_name}")
+        data = data_tasks[task_name]
+        path = os.path.join(settings_optimization['main_path'], "experiments", str(settings_optimization['num_cali_samples']), task_name)
+
+        for i in range(settings_optimization['n_ensembles']):
+            net = NWP_net(settings=settings)
+            if settings_optimization["train_model_start"]:
+                net.load_state_dict(data_tasks[task_name].task_params[i])
+            else:
+                net.load_state_dict(torch.load(f"{path}/last_optim_model"))
+
+            # compute predictions
+            for X, y in data_tasks[task_name].test_dataloader:
+                X_test, y_test = X, y
+
+            # compute prediction of the ensemble model
+            if i == 0:
+                pred = net(X_test).detach().numpy()
+            else:
+                pred = pred + net(X_test).detach().numpy()
+
+        pred = pred / settings_optimization['n_ensembles']
+
+        if scale_back_data_for_plot:
+            y = data.scaler_y.inverse_transform(y.reshape(-1, 1))
+            pred = data.scaler_y.inverse_transform(pred)
+
+        pred_sorted = np.sort(pred)  # contains quantiles prediction
+
+
+        samples_to_consider = len(data_tasks[task_name].data_te.index[data_tasks[task_name].data_te.index.year == data_tasks[task_name].year_te[0]])  # for a fair comparison of the quantile score
+
+        # quantile score computation before calibration
+        quantile_score_table[task_name] = [quantile_score(
+            y=y.flatten()[-samples_to_consider:],
+            f=pred_sorted[-samples_to_consider:],
+            tau=settings_optimization['quantiles']
+        )
+        ]
+
+        # create dataframe with computed predictions
+        # pred_quantiles_test contain true measures and quantile predictions
+        # data_reli contains data for plotting the reliability plot
+        data_tasks[task_name].pred_quantiles_test, data_tasks[task_name].data_reli_test = reliability_plot(
+            quantiles=settings_optimization['quantiles'],
+            y=y,
+            pred_sorted=pred_sorted,
+            task_name=task_name,
+            plot_graph=False
+        )
+
+
+        # Save data for conformal predictions
+        x_conformal_scaled = data_tasks[task_name].x_test
+        pred_conformal_scaled = net(torch.Tensor(x_conformal_scaled)).detach()
+        pred_conformal = np.sort(data_tasks[task_name].scaler_y.inverse_transform(pred_conformal_scaled))
+        y_test_not_scaled = data_tasks[task_name].scaler_y.inverse_transform(
+            data_tasks[task_name].y_test.reshape(-1, 1))
+
+        data_tasks[task_name].pred_conformal_df = pd.DataFrame(
+            index=data_tasks[task_name].data_te.index,
+            columns=["y"] + [quantile for quantile in settings_optimization["quantiles"]],
+            data=np.concatenate((y_test_not_scaled, pred_conformal), axis=1))
+
+        '''
+        # if same predictions but scaled
+        pred_conformal_df_scaled = pd.DataFrame(index=data_tasks[task_name].data_te.index,
+                                                  columns=["y"] + [quantile for quantile in settings_optimization["quantiles"]],
+                                                  data=np.concatenate((data_tasks[task_name].y_test.reshape(-1, 1),
+                                                                       pred_conformal_scaled.numpy()), axis=1))
+        '''
+        
+        # export data to csv (to use in R code)
+        '''
+        data_CQRA = pd.read_csv("C:\\Users\\tuissi\\Documents\\NWP\\2Macs_code\\SolarPostProcessing_pytorch\\data\\bon_CQRA_2MACS_2019_2020.txt", sep='\t', index_col=0,  date_format="%Y-%m-%d %H:%M:%S")
+        data_CQRA_2020 = data_CQRA[data_CQRA.index.year.isin([2020])]
+        data_CQRA_2020[[col for col in data_CQRA_2020 if 'QRNN8.' in col]] = pred_sorted
+        data_CQRA_2020.to_csv("C:\\Users\\tuissi\\Documents\\NWP\\code\\QuantileFcstComb-main\\Data\\bon_CQRA_2MACS_2020.txt", sep='\t', date_format="%Y-%m-%d %H:%M:%S")
+        '''
+
+        # CONFORMANCE ANALYSIS
+        results_cp = {}
+        df = data_tasks[task_name].pred_conformal_df
+
+        # df=pred_conformal_df_scaled
+        if settings_cp["cp_method"] == 'cp':
+            results_cp[task_name] = compute_cp([df], settings=settings_cp)
+        elif settings_cp["cp_method"] == 'cqr':
+            results_cp[task_name] = compute_cp([df], settings=settings_cp)
+        elif settings_cp["cp_method"] == 'pid':
+            results_cp[task_name] = compute_pid([df], settings=settings_cp, lr=settings_cp['pid_lr'], KI=settings_cp['pid_KI'])
+
+        # compute quantile score after conformal
+        quantile_score_table_conformal[task_name] = [quantile_score(
+            y=results_cp[task_name]['y'].to_numpy(),
+            f=results_cp[task_name][settings_optimization["quantiles"].tolist()].to_numpy(),
+            tau=settings_optimization["quantiles"]
+            )
+        ]
+        data_tasks[task_name].pred_after_conformal_df = results_cp[task_name]
+        # sharpness plot after conformal
+        # plot_sharpness_plot(results_cp[task_name][quantiles.tolist()], task_name)
+
+        '''
+        # reliability plot after conformal analysis
+        _, _ = reliability_plot(
+            quantiles=settings_optimization["quantiles"],
+            y=results_cp[task_name]['y'].to_numpy().reshape(-1, 1),
+            pred_sorted=results_cp[task_name][settings_optimization["quantiles"].tolist()].to_numpy(),
+            task_name=task_name,
+            plot_graph=True
+        )
+
+        # reliability plot without conformal analysis
+        _, _ = reliability_plot(
+            quantiles=settings_optimization["quantiles"],
+            y=df['y'].to_numpy().reshape(-1, 1),
+            pred_sorted=df[settings_optimization["quantiles"].tolist()].to_numpy(),
+            task_name=task_name,
+            plot_graph=True
+        )
+        '''
+
+        #results_cp[task_name].plot()
+        print('cp done')
+
+    
+    return quantile_score_table, quantile_score_table_conformal
+
+
 
 
 # Function to calculate quantile score
@@ -390,7 +752,7 @@ def keep_recent_files(folder_path, num_to_keep=10):
         except PermissionError:
             print(f"Permission error: Unable to remove '{item_path}'")
 
-def reliability_plot(quantiles, y, pred_sorted, task_name, plot_graph=True):
+def reliability_plot(quantiles, y, pred_sorted, task_name, plot_graph=True, conformal_title=False):
     tmp_y = pd.DataFrame({"y": y.flatten()})
     tmp_quantiles = pd.DataFrame(columns=quantiles, data=pred_sorted)
     scores_res = pd.concat([tmp_y, tmp_quantiles], axis=1)
@@ -437,7 +799,10 @@ def reliability_plot(quantiles, y, pred_sorted, task_name, plot_graph=True):
         ax.set_ylim(0, 1)
         ax.legend()
         plt.grid()
-        plt.title(f"Reliability plot {task_name}")
+        if conformal_title:
+            plt.title(f"Reliability plot {task_name}")
+        else:
+            plt.title(f"Reliability plot {task_name} - Conformal analysis")
         plt.show()
     return scores_res, data_reli
 
@@ -465,7 +830,44 @@ def plot_sharpness_plot(scores_res, task_name):
     # col_wrap=4, alpha=0.7, linewidth=1.5, width=0.6)
     p2.set_xlabels("Nominal coverage rate [%]")
     p2.set_ylabels("Interval width [W/m^2]")
-    p2.set(ylim=(0, 1000))  # , yticks=[0, 400, 800])
+    #p2.set(ylim=(0, 1000))  # , yticks=[0, 400, 800])
     plt.grid()
     plt.title(f"Sharpness plot {task_name}")
     plt.show()
+
+
+# plot predictions quantiles
+def plot_predictions_quantiles(task_name, quantiles, y, pred_sorted, conformal_analysis):
+    plt.figure()
+    plt.plot(y, 'b')
+    for i in range(len(quantiles)):
+        plt.plot(pred_sorted[:, i], linewidth=0.5, label=quantiles[i])
+    plt.legend()
+    if conformal_analysis:
+        plt.title(f"Predictions quantiles {task_name} - Conformal analysis")
+    else:
+        plt.title(f"Predictions quantiles {task_name}")
+    plt.grid()
+    plt.show()
+
+
+def compute_num_cali_samples(step_wise_cp, num_cali_samples_proposed, target_alpha, pred_horiz):
+    if step_wise_cp:
+        min_num_cali_samples = int((target_alpha[0])**-1)
+        try:
+            if num_cali_samples_proposed < min_num_cali_samples: raise InvalidNumCaliSamples() # compute minimum number of samples
+        except:
+            print("Invalid num_cali_samples, the default num_cali_samples will be used")
+            num_cali_samples = 122
+        else:
+            num_cali_samples = num_cali_samples_proposed
+    else:
+        min_num_cali_samples = int((target_alpha[0] ** -1) / pred_horiz)
+        try:
+            if num_cali_samples_proposed < min_num_cali_samples: raise InvalidNumCaliSamples()
+        except:
+            print("Invalid num_cali_samples, the default num_cali_samples will be used")
+            num_cali_samples = 10
+        else:
+            num_cali_samples = num_cali_samples_proposed
+    return int(num_cali_samples)

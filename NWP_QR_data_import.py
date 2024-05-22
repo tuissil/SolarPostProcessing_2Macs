@@ -27,7 +27,11 @@ class Stn_data:
         self.data_original_df = None  # original dataframe
         self.pred_quantiles_test = None  # resulting predicted quantiles
         self.data_reli_test = None  # data for plotting reliability plot
-        self.pred_conformance_df = None # dataframe with prediction for conformance analysis
+        self.pred_conformal_df = None # dataframe with prediction for conformance analysis
+        self.task_params = None  # models parameters
+        self.test_dataloader = None  # test dataloader for prediction computation
+        self.pred_after_conformal_df = None  # predictions quantiles after conformance
+        self.year_te = None  # test set year for the conformal analysis
 
 # separate the dataset in input and output
 def in_out_split(data):
@@ -47,7 +51,7 @@ def in_out_split(data):
 # Associate to each station the corresponding train, (validation), and test I/O dataset as array in scaled or unscaled
 # form according to parameter scale_data
 def split_data(task, yr_tr, yr_te, yr_va, va_te_date_split, hours_range, scale_data=True, shuffle_train=False):
-    dir =os.path.join(os.getcwd(), 'data_zenith95')  # default 'data'
+    dir =os.path.join(os.getcwd(), 'data_zenith100')  # default 'data'
     stns = task
 
     stns_list = {}
@@ -65,11 +69,12 @@ def split_data(task, yr_tr, yr_te, yr_va, va_te_date_split, hours_range, scale_d
             data_tr = data[data.index.year.isin(yr_tr)].sample(frac=1)
         else:
             data_tr = data[data.index.year.isin(yr_tr)]
-
+        #data_tr = data_tr[data_tr.index.hour.isin(hours_range)]  # if same hours range as in test set
         
         # validation data
         data_va = data[data.index.year.isin(yr_va)][:va_te_date_split]  # data[data.index.year.isin(yr_va)]
-        
+        #data_va = data_va[data_va.index.hour.isin(hours_range)]  # if same hours range as in test set
+
         # test data
         data_te = data[data.index.year.isin([yr_va[0], yr_te[0]])][va_te_date_split:]
         data_te = data_te[data_te.index.hour.isin(hours_range)] # modified for conformance  data[data.index.year.isin(yr_te)]
@@ -100,6 +105,7 @@ def split_data(task, yr_tr, yr_te, yr_va, va_te_date_split, hours_range, scale_d
         stns_list[stn].x_vali, stns_list[stn].y_vali = in_out_split(data_va)
         stns_list[stn].x_test, stns_list[stn].y_test = in_out_split(data_te)
         stns_list[stn].data_te = data_te
+        stns_list[stn].year_te = yr_te
 
     return stns_list
 
