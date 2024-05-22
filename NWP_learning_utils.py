@@ -60,8 +60,7 @@ def truth_table(methods, step_wise_cp_options, num_cali_samples_true, num_cali_s
                 combinations.append((method, step_wise_cp, num_cali_samples))
         else:
             for num_cali_samples in num_cali_samples_false:
-                if method != "pid":
-                    combinations.append((method, step_wise_cp, num_cali_samples))
+                combinations.append((method, step_wise_cp, num_cali_samples))
 
     # Convert the combinations into a pandas DataFrame
     columns = ['method', 'step_wise_cp', 'num_cali_samples']
