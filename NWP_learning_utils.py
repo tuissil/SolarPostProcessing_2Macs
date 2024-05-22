@@ -328,8 +328,8 @@ def compute_metrics(data_tasks, settings_optimization, settings, settings_cp, sc
         # data_reli contains data for plotting the reliability plot
         data_tasks[task_name].pred_quantiles_test, data_tasks[task_name].data_reli_test = reliability_plot(
             quantiles=settings_optimization['quantiles'],
-            y=y,
-            pred_sorted=pred_sorted,
+            y=y[-samples_to_consider:],
+            pred_sorted=pred_sorted[-samples_to_consider:],
             task_name=task_name,
             plot_graph=False
         )
@@ -338,12 +338,12 @@ def compute_metrics(data_tasks, settings_optimization, settings, settings_cp, sc
         # Save data for conformal predictions
         x_conformal_scaled = data_tasks[task_name].x_test
         pred_conformal_scaled = net(torch.Tensor(x_conformal_scaled)).detach()
-        pred_conformal = np.sort(data_tasks[task_name].scaler_y.inverse_transform(pred_conformal_scaled))
+        pred_conformal = np.sort(data_tasks[task_name].scaler_y.inverse_transform(pred_conformal_scaled))[-samples_to_consider:]
         y_test_not_scaled = data_tasks[task_name].scaler_y.inverse_transform(
-            data_tasks[task_name].y_test.reshape(-1, 1))
+            data_tasks[task_name].y_test.reshape(-1, 1))[-samples_to_consider:]
 
         data_tasks[task_name].pred_conformal_df = pd.DataFrame(
-            index=data_tasks[task_name].data_te.index,
+            index=data_tasks[task_name].data_te.index[-samples_to_consider:],
             columns=["y"] + [quantile for quantile in settings_optimization["quantiles"]],
             data=np.concatenate((y_test_not_scaled, pred_conformal), axis=1))
 
