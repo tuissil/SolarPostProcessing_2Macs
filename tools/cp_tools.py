@@ -164,7 +164,7 @@ def compute_pid(results_e, settings, lr=0.01, KI=10, T_burnin=7, Tin=1e9, delta=
 
                 Csat = (2 / np.pi) * (np.ceil(np.log(Tin) * delta) - (1 / np.log(Tin)))
 
-                results = cts_pid(data=df_h, alpha=alpha, lr=lr, Csat=Csat, KI=KI, T_burnin=T_burnin)
+                results = cts_pid(data=df_h, alpha=alpha, lr=lr, Csat=Csat, KI=KI, T_burnin=settings['T_burnin'])
                 sets_h.append(np.stack(results['sets'], axis=1).T)
                 h_j+=1
         else:

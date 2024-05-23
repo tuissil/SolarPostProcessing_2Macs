@@ -49,12 +49,15 @@ if __name__ == "__main__":
 
     target_alpha = [0.02, 0.1, 0.2, 0.4, 0.6, 0.8]
     pred_horiz = 9  # default 9
-
+    tasks_to_experiment = ['bon'] #["bon", "dra", "fpk", "gwn", "psu", "sxf", "tbl"]
+    pid_lr= 0.01  # just if cp_method = pid
+    pid_KI= 10  # just if cp_method = pid
+    T_burnin = 10
 
     # create truth table for the proofs
-    methods = ['cp', 'cqr', 'pid'] #['cp', 'cqr', 'pid']
+    methods = ['pid'] #['cp', 'cqr', 'pid']
     step_wise_cp_options = [True, False]
-    num_cali_samples_true = [50, 122, 150]  # if step_wise true
+    num_cali_samples_true = [150] #[50, 122, 150]  # if step_wise true
     num_cali_samples_false = [15, 10, 5]  # if not step_wise
     truth_table = truth_table(methods, step_wise_cp_options, num_cali_samples_true, num_cali_samples_false)
     truth_table["data_tasks"] = np.NaN
@@ -89,8 +92,9 @@ if __name__ == "__main__":
             'num_ense': 1,
             'stepwise': step_wise_cp,
             'cp_method': cp_method,
-            'pid_lr': 0.01,  # just if cp_method = pid
-            'pid_KI': 10,  # just if cp_method = pid
+            'pid_lr': pid_lr,  # just if cp_method = pid
+            'pid_KI': pid_KI,
+            'T_burnin': T_burnin# just if cp_method = pid
         }
 
         print(f"Truth table row {i}, Method: {cp_method}, stepwise: {step_wise_cp}, num_cali_samples: {num_cali_samples}")
@@ -98,7 +102,7 @@ if __name__ == "__main__":
         #  Parameters setting for training and hyperoptimization
         quantiles = np.array([0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99])
         settings_optimization = {
-            "task_names": ["bon", "dra", "fpk", "gwn", "psu", "sxf", "tbl"],  #["bon", "dra", "fpk", "gwn", "psu", "sxf", "tbl"]
+            "task_names": tasks_to_experiment,  #["bon", "dra", "fpk", "gwn", "psu", "sxf", "tbl"]
             "yr_tr": [2017, 2018],
             "yr_va": [2019],
             "yr_te": [2020],
