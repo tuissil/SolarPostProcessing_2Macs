@@ -42,14 +42,12 @@ main_path = os.getcwd().replace("\\", "/")
 
 
 if __name__ == "__main__":
-
-    print("Start")
-
-    # CONFORMANCE ANALYSIS
-
-    target_alpha = [0.02, 0.1, 0.2, 0.4, 0.6, 0.8]
-    pred_horiz = 9  # default 9
+    #-------------------------------------------------------------
+    # Configs
+    # -------------------------------------------------------------
     tasks_to_experiment = ['bon'] #["bon", "dra", "fpk", "gwn", "psu", "sxf", "tbl"]
+    scale_data= True
+    scale_back_data = True  # True if you want to work with unscaled data
     pid_lr= 0.01  # just if cp_method = pid
     pid_KI= 10  # just if cp_method = pid
     T_burnin = 10
@@ -59,6 +57,13 @@ if __name__ == "__main__":
     step_wise_cp_options = [True, False]
     num_cali_samples_true = [150] #[50, 122, 150]  # if step_wise true
     num_cali_samples_false = [15, 10, 5]  # if not step_wise
+
+    #-----------------------------------------------------------------
+    print("Start")
+
+    target_alpha = [0.02, 0.1, 0.2, 0.4, 0.6, 0.8]
+    pred_horiz = 9  # default 9
+
     truth_table = truth_table(methods, step_wise_cp_options, num_cali_samples_true, num_cali_samples_false)
     truth_table["data_tasks"] = np.NaN
     truth_table["quantile_score"] = np.NaN
@@ -106,7 +111,7 @@ if __name__ == "__main__":
             "yr_tr": [2017, 2018],
             "yr_va": [2019],
             "yr_te": [2020],
-            "scale_data": True,
+            "scale_data": scale_data,
             "shuffle_train": False,
             ## Optim params
             "quantiles": quantiles,  # 0.01, 0.05, 0.95, 0.99
@@ -145,7 +150,6 @@ if __name__ == "__main__":
 
         # RESULTS
         print("Optimization results")
-        scale_back_data = True  # True if you want to work with unscaled data
         if scale_back_data:
             decimals_quantile_score = 1
         else:
