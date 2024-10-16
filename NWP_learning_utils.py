@@ -51,20 +51,26 @@ class InvalidNumCaliSamples(Exception):
     pass
 
 
-def truth_table(methods, step_wise_cp_options, num_cali_samples_true, num_cali_samples_false):
-    # Generate all combinations of the parameters
+def truth_table(methods, step_wise_cp_options, num_cali_samples_true, num_cali_samples_false, p_gains, optimize_pid, test_months):
     combinations = []
-    for method, step_wise_cp in itertools.product(methods, step_wise_cp_options):
-        if step_wise_cp:
-            for num_cali_samples in num_cali_samples_true:
-                combinations.append((method, step_wise_cp, num_cali_samples))
-        else:
-            for num_cali_samples in num_cali_samples_false:
-                combinations.append((method, step_wise_cp, num_cali_samples))
 
-    # Convert the combinations into a pandas DataFrame
-    columns = ['method', 'step_wise_cp', 'num_cali_samples']
-    df = pd.DataFrame(combinations, columns=columns)
+    for method in methods:
+        for step_wise in step_wise_cp_options:
+            num_cali_samples = num_cali_samples_true if step_wise else num_cali_samples_false
+            for num_cali in num_cali_samples:
+                if method == 'pid':
+                    for p_gain in p_gains:
+                        if optimize_pid:
+                            # Add a row for each test month
+                            for month in test_months:
+                                combinations.append([method, step_wise, num_cali, p_gain, month])
+                        else:
+                            combinations.append([method, step_wise, num_cali, p_gain, None])
+                else:
+                    combinations.append([method, step_wise, num_cali, None, None])
+
+    # Create the DataFrame
+    df = pd.DataFrame(combinations, columns=['method', 'step_wise_cp', 'num_cali_samples', 'p_gain', 'test_set_number'])
 
     return df
 
@@ -93,9 +99,16 @@ def create_folder(path):
     return
 
 def train_hyperoptim(settings_optimization):
-    # numero_giorni_pretest= settings['num_cali_samples']
+    # numero_ore_pretest= settings['num_cali_samples']
     # va_te_date_split = "2019-09-01 00:00:00" -> va_te_date_split = inizio test (gennaio 2020)  - numero_giorni_pretest
-    va_te_date_split = datetime.strftime(datetime.strptime("2020-01-01 00:00:00", "%Y-%m-%d %H:%M:%S") + timedelta(days=-settings_optimization["num_cali_samples"]),"%Y-%m-%d %H:%M:%S")
+    if settings_optimization["optimize_pid"]:
+        # original validation / test set separation
+        va_te_date_initial = datetime.strptime("2020-01-01 00:00:00", "%Y-%m-%d %H:%M:%S") + timedelta(days=-settings_optimization["num_cali_samples"])
+        if (va_te_date_initial + timedelta(days=+30*int(settings_optimization["test_set_number"])) + timedelta(days=settings_optimization["num_cali_samples"]))> datetime.strptime("2020-12-31 23:00:00", "%Y-%m-%d %H:%M:%S"):
+            print("Reduce test set number! Incomplete test set")
+        va_te_date_split = datetime.strftime(va_te_date_initial + timedelta(days=+30*int(settings_optimization["test_set_number"])),"%Y-%m-%d %H:%M:%S")
+    else:
+        va_te_date_split = datetime.strftime(datetime.strptime("2020-01-01 00:00:00", "%Y-%m-%d %H:%M:%S") + timedelta(days=-settings_optimization["num_cali_samples"]),"%Y-%m-%d %H:%M:%S")
 
     task_params = {}  # dict where to save all the optimal params for each station
 
@@ -107,7 +120,8 @@ def train_hyperoptim(settings_optimization):
                       va_te_date_split=va_te_date_split,
                       hours_range=range(9, 17+1), # default range(9, 17+1)
                       scale_data=settings_optimization["scale_data"],
-                      shuffle_train=settings_optimization["shuffle_train"])
+                      shuffle_train=settings_optimization["shuffle_train"],
+                      optimize_pid=settings_optimization["optimize_pid"])
 
 
     for task_name in settings_optimization["task_names"]:
@@ -276,7 +290,7 @@ def train_hyperoptim(settings_optimization):
 
     return settings, data_tasks
 
-def compute_metrics(data_tasks, settings_optimization, additional_settings, settings_cp, decimals_quantile_score, scale_back_data=True):
+def compute_metrics(data_tasks, settings_optimization, additional_settings, settings_cp, decimals_quantile_score, scale_back_data=True, optimize_pid=False):
     quantile_score_table = pd.DataFrame()
     quantile_score_table_conformal = pd.DataFrame()
 
@@ -295,7 +309,7 @@ def compute_metrics(data_tasks, settings_optimization, additional_settings, sett
 
             # compute predictions
             for X, y in data_tasks[task_name].test_dataloader:
-                X_test, y_test = X, y
+                    X_test, y_test = X, y
 
             # compute prediction of the ensemble model
             if i == 0:
@@ -306,20 +320,29 @@ def compute_metrics(data_tasks, settings_optimization, additional_settings, sett
         pred = pred / settings_optimization['n_ensembles']
 
         if scale_back_data:
-            y = data.scaler_y.inverse_transform(y.reshape(-1, 1))
+            y_test = data.scaler_y.inverse_transform(y_test.reshape(-1, 1))
             pred = data.scaler_y.inverse_transform(pred)
         else:
-            y = np.array(y).reshape(-1, 1)
+            y_test = np.array(y_test).reshape(-1, 1)  # to correct predictions quantiles
 
         pred_sorted = np.sort(pred)  # contains quantiles prediction
 
-
-        samples_to_consider = len(data_tasks[task_name].data_te.index[data_tasks[task_name].data_te.index.year == data_tasks[task_name].year_te[0]])  # for a fair comparison of the quantile score
+        if optimize_pid:
+            # in this case num_cali_samples indicates the number of days you want to consider, the ones used for calibration are 1/3
+            samples_to_consider = settings_optimization["num_cali_samples"]*settings_optimization['pred_horiz']
+            y_test = y_test[:samples_to_consider]
+            pred_sorted = pred_sorted[:samples_to_consider]
+            days_to_consider_quantile_score = settings_optimization["num_cali_samples"]-settings_optimization['days_cali'] # days to exclude from the beginning
+            samples_to_consider_quantile_score = days_to_consider_quantile_score*settings_optimization['pred_horiz']
+            settings_cp["num_cali_samples"]=settings_optimization["days_cali"]
+        else:
+            samples_to_consider = len(data_tasks[task_name].data_te) # consider all the samples
+            samples_to_consider_quantile_score = len(data_tasks[task_name].data_te.index[data_tasks[task_name].data_te.index.year == data_tasks[task_name].year_te[1]])  # for a fair comparison of the quantile score, we consider as test set just the year 2020
 
         # quantile score computation before calibration
         quantile_score_table[task_name] = [np.round(quantile_score(
-            y=y.flatten()[-samples_to_consider:],
-            f=pred_sorted[-samples_to_consider:],
+            y=y_test.flatten()[-samples_to_consider_quantile_score:],
+            f=pred_sorted[-samples_to_consider_quantile_score:],
             tau=settings_optimization['quantiles']
         ), decimals_quantile_score)
         ]
@@ -329,7 +352,7 @@ def compute_metrics(data_tasks, settings_optimization, additional_settings, sett
         # data_reli contains data for plotting the reliability plot
         data_tasks[task_name].pred_quantiles_test, data_tasks[task_name].data_reli_test = reliability_plot(
             quantiles=settings_optimization['quantiles'],
-            y=y[-samples_to_consider:],
+            y=y_test[-samples_to_consider:],
             pred_sorted=pred_sorted[-samples_to_consider:],
             task_name=task_name,
             plot_graph=False
@@ -337,7 +360,13 @@ def compute_metrics(data_tasks, settings_optimization, additional_settings, sett
 
 
         # Save data for conformal predictions
-        x_conformal_scaled = data_tasks[task_name].x_test
+        if optimize_pid:
+            x_conformal_scaled = data_tasks[task_name].x_test[:samples_to_consider]
+            index_conformal_df = data_tasks[task_name].data_te.index[:samples_to_consider]
+        else:
+            x_conformal_scaled = data_tasks[task_name].x_test
+            index_conformal_df=data_tasks[task_name].data_te.index[-samples_to_consider:]
+
         pred_conformal_scaled = net(torch.Tensor(x_conformal_scaled)).detach()
         if scale_back_data:
             pred_conformal = np.sort(data_tasks[task_name].scaler_y.inverse_transform(pred_conformal_scaled))[-samples_to_consider:]
@@ -347,7 +376,7 @@ def compute_metrics(data_tasks, settings_optimization, additional_settings, sett
             y_test = data_tasks[task_name].y_test.reshape(-1, 1)[-samples_to_consider:]
 
         data_tasks[task_name].pred_conformal_df = pd.DataFrame(
-            index=data_tasks[task_name].data_te.index[-samples_to_consider:],
+            index=index_conformal_df,
             columns=["y"] + [quantile for quantile in settings_optimization["quantiles"]],
             data=np.concatenate((y_test, pred_conformal), axis=1))
 
@@ -371,18 +400,24 @@ def compute_metrics(data_tasks, settings_optimization, additional_settings, sett
         results_cp = {}
         df = data_tasks[task_name].pred_conformal_df
 
+        # initialize lr_hist
+        lr_hist = None
+
         # df=pred_conformal_df_scaled
         if settings_cp["cp_method"] == 'cp':
             results_cp[task_name] = compute_cp([df], settings=settings_cp)
         elif settings_cp["cp_method"] == 'cqr':
-            results_cp[task_name] = compute_cp([df], settings=settings_cp)
+            results_cp[task_name] = compute_cqr([df], settings=settings_cp)
         elif settings_cp["cp_method"] == 'pid':
-            results_cp[task_name] = compute_pid([df], settings=settings_cp, lr=settings_cp['pid_lr'], KI=settings_cp['pid_KI'])
+            # returns also the kp history
+            results_cp[task_name], lr_hist = compute_pid([df], settings=settings_cp, lr=settings_cp['pid_lr'], KI=settings_cp['pid_KI'])
+
+        data_tasks[task_name].lr_hist = lr_hist
 
         # compute quantile score after conformal
         quantile_score_table_conformal[task_name] = [np.round(quantile_score(
-            y=results_cp[task_name]['y'].to_numpy(),
-            f=results_cp[task_name][settings_optimization["quantiles"].tolist()].to_numpy(),
+            y=results_cp[task_name]['y'][-samples_to_consider_quantile_score:].to_numpy(),
+            f=results_cp[task_name][settings_optimization["quantiles"][-samples_to_consider_quantile_score:].tolist()].to_numpy(),
             tau=settings_optimization["quantiles"]
             ), decimals_quantile_score)
         ]
@@ -410,6 +445,12 @@ def compute_metrics(data_tasks, settings_optimization, additional_settings, sett
         )
         '''
 
+        # plot lr_hist
+        # plt.figure()
+        # plt.plot(lr_hist)
+        # plt.grid()
+        # plt.show()
+
         #results_cp[task_name].plot()
         print('cp done')
 
@@ -427,7 +468,7 @@ def quantile_score(y, f, tau=np.array([0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6,
     pbs = np.zeros_like(f)
     for j in range(len(tau)):
         q = f[:, j]
-        pbs[:, j] = np.where(y >= q, tau[j] * (y - q), (1 - tau[j]) * (q - y))
+        pbs[:, j] = np.where(y >= q, tau[j] * (y - q), (1 - tau[j]) * (q - y))  # adding a product for a constant does not change the results
     return np.mean(pbs)
 
 class PinballLoss(nn.Module):
@@ -834,7 +875,7 @@ def plot_sharpness_plot(scores_res, task_name):
     # col_wrap=4, alpha=0.7, linewidth=1.5, width=0.6)
     p2.set_xlabels("Nominal coverage rate [%]")
     p2.set_ylabels("Interval width [W/m^2]")
-    #p2.set(ylim=(0, 1000))  # , yticks=[0, 400, 800])
+    p2.set(ylim=(0, 1200))  # , yticks=[0, 400, 800])
     plt.grid()
     plt.title(f"Sharpness plot {task_name}")
     plt.show()
