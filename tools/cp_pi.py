@@ -70,6 +70,7 @@ def quantile_integrator(
     seasonal_period = kwargs.get('seasonal_period')
     if seasonal_period is None:
         seasonal_period = 1
+    lr_hist = np.zeros((T_test,))
 
     # Run the main loop
     # At time t, we observe y_t and make a prediction for y_{t+ahead}
@@ -79,6 +80,9 @@ def quantile_integrator(
         t_lr = t
         t_lr_min = max(t_lr - T_burnin, 0)
         lr_t = lr * (scores[t_lr_min:t_lr].max() - scores[t_lr_min:t_lr].min()) if proportional_lr and t_lr > 0 else lr
+
+        lr_hist[t]=lr_t
+
         t_pred = t - ahead + 1
         if t_pred < 0:
             continue # We can't make any predictions yet if our prediction time has not yet arrived
@@ -94,10 +98,11 @@ def quantile_integrator(
             qts[t+1] = qts[t] - lr_t * grad
             integrators[t+1] = integrator if integrate else 0
             qs[t+1] = qts[t+1] + integrators[t+1]
-    results = {"method": "Quantile+Integrator (log)", "q" : qs}
-    plt.plot(qs)
-    plt.plot(scores)
-    plt.plot(integrators)
+    results = {"method": "Quantile+Integrator (log)", "q" : qs, "lr_hist": lr_hist}
+    #plt.plot(lr_hist), if you want to plot the evolution of the P gain
+    #plt.plot(qs)
+    #plt.plot(scores)
+    #plt.plot(integrators)
     return results
 
 
@@ -135,16 +140,32 @@ def cts_pid(data, alpha, lr, Csat, KI, T_burnin, score_function_name="cqr-asymme
         stacked_scores = np.stack(data['scores'].to_list())
         kwargs['upper'] = False
         q0 = fn(stacked_scores[:, 0], alpha / 2, lr, **kwargs)['q']
+
+        # show kp evolution
+        lr_hist0=fn(stacked_scores[:, 0], alpha / 2, lr, **kwargs)['lr_hist']
+
         kwargs['upper'] = True
         q1 = fn(stacked_scores[:, 1], alpha / 2, lr, **kwargs)['q']
+
+        # show kp evolution
+        lr_hist1 = fn(stacked_scores[:, 1], alpha / 2, lr, **kwargs)['lr_hist']
+
         q = [np.array([q0[i], q1[i]]) for i in range(len(q0))]
+
+        # show kp evolution
+        lr_hist = [np.array([lr_hist0[i], lr_hist1[i]]) for i in range(len(q0))]
+
     else:
         kwargs['upper'] = True
         q = fn(data['scores'].to_numpy(), alpha, lr, **kwargs)['q']
+
+        # show kp evolution
+        lr_hist = fn(data['scores'].to_numpy(), alpha, lr, **kwargs)['lr_hist']
 
     sets = [set_function(data['forecasts'].interpolate().to_numpy()[i], q[i]) for i in range(len(q))]
     # Make sure the set size is at least minsize by setting sets[j][0] = min(sets[j][0], sets[j][1]-minsize) and sets[j][1] = max(sets[j][1], sets[j][1]+minsize)
     sets = [np.array([np.minimum(sets[j][0], sets[j][1] - minsize), np.maximum(sets[j][1], sets[j][0] + minsize)])
             for j in range(len(sets))]
 
-    return {"q": q, "sets": sets}
+
+    return {"q": q, "sets": sets, "lr_hist": lr_hist}
