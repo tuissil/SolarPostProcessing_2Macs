@@ -62,7 +62,7 @@ if __name__ == "__main__":
 
 
     # create truth table for the proofs
-    methods = ['cqr']  #['cp', 'cqr', 'pid']
+    methods = ['cqr', 'pid']  #['cp', 'cqr', 'pid']
     step_wise_cp_options = [True, False]
     num_cali_samples_true = [50, 122, 150] #[50, 122, 150, 180]  # if step_wise true
     num_cali_samples_false = [15, 10, 5] #[50, 15, 10, 5]  # if not step_wise
