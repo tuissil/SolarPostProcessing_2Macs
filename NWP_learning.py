@@ -62,10 +62,10 @@ if __name__ == "__main__":
 
 
     # create truth table for the proofs
-    methods = ['cp']  #['cp', 'cqr', 'pid']
+    methods = ['cqr']  #['cp', 'cqr', 'pid']
     step_wise_cp_options = [True, False]
-    num_cali_samples_true = [150] #[50, 122, 150, 180]  # if step_wise true
-    num_cali_samples_false = [50]#[15, 10, 5] #[15, 10, 5]  # if not step_wise
+    num_cali_samples_true = [50, 122, 150] #[50, 122, 150, 180]  # if step_wise true
+    num_cali_samples_false = [15, 10, 5] #[50, 15, 10, 5]  # if not step_wise
     p_gains = [0.01] #[0.001, 0.01, 0.1, 1, 10] # only for pid method
     test_months =[0] #[0,1,2,3,4,5,6,7,8,9,10,11,12] # only for pid method #maximum is 12 with 180 days for cali and vali, otherwise exceeds the dataset
     truth_table = truth_table(methods, step_wise_cp_options, num_cali_samples_true, num_cali_samples_false, p_gains, optimize_pid, test_months)
@@ -244,6 +244,8 @@ if __name__ == "__main__":
     for row_to_display in rows_to_display:
         data_tasks = truth_table["data_tasks"][row_to_display]
         for task_name in settings_optimization["task_names"]:
+
+            # RELIABILITY PLOTS OVER 2020
             _, _ = reliability_plot(
                 quantiles=settings_optimization["quantiles"],
                 y=data_tasks[task_name].pred_after_conformal_df['y'].to_numpy().reshape(-1, 1),
@@ -253,14 +255,6 @@ if __name__ == "__main__":
                 conformal_title=True,
             )
 
-            if save_plot:
-                plt.gca().set_title('')
-                plt.gca().get_legend().remove() # remove legend
-                plt.gca().set_xlabel('')  # Remove the x-axis label
-                plt.gca().set_ylabel('')  # Remove the y-axis label
-                plt.gca().set_xticklabels('')
-                plt.gca().set_yticklabels('')
-                plt.savefig(f"C:\\Users\\tuissi\\Documents\\NWP\\submit_paper\\rel_plot\\{task_name}_conf_{rows_to_display.index(row_to_display)}_rel.eps", bbox_inches='tight', pad_inches=-0.1)
 
             # reliability plot before conformal analysis
             samples_to_consider = len(data_tasks[task_name].data_te.index[
@@ -276,36 +270,14 @@ if __name__ == "__main__":
                 conformal_title=False
             )
 
-            if save_plot:
-                plt.gca().set_title('')
-                plt.gca().get_legend().remove() # remove legend
-                plt.gca().set_xlabel('')  # Remove the x-axis label
-                plt.gca().set_ylabel('')  # Remove the y-axis label
-                plt.gca().set_xticklabels('')
-                plt.gca().set_yticklabels('')
-                plt.savefig(f"C:\\Users\\tuissi\\Documents\\NWP\\submit_paper\\rel_plot\\{task_name}_QRNN_{rows_to_display.index(row_to_display)}_rel.eps", bbox_inches='tight', pad_inches=-0.1)
-
+            ###############################################################################
             # sharpness diagram for test = 2020
             plot_sharpness_plot(data_tasks[task_name].pred_conformal_df[-samples_to_consider:], task_name)
-            if save_plot:
-                plt.gca().set_title('')
-                plt.gca().set_xlabel('')  # Remove the x-axis label
-                plt.gca().set_ylabel('')  # Remove the y-axis label
-                plt.gca().set_xticklabels('')
-                plt.gca().set_yticklabels('')
-                plt.savefig(f"C:\\Users\\tuissi\\Documents\\NWP\\submit_paper\\sharp_diag\\{task_name}_QRNN_{rows_to_display.index(row_to_display)}_sharp.eps", bbox_inches='tight', pad_inches=-0.07)
-
             plot_sharpness_plot(data_tasks[task_name].pred_after_conformal_df, task_name) # conformal analysis
-            if save_plot:
-                plt.gca().set_title('')
-                plt.gca().set_xlabel('')  # Remove the x-axis label
-                plt.gca().set_ylabel('')  # Remove the y-axis label
-                plt.gca().set_xticklabels('')
-                plt.gca().set_yticklabels('')
-                plt.savefig(f"C:\\Users\\tuissi\\Documents\\NWP\\submit_paper\\sharp_diag\\{task_name}_conf_{rows_to_display.index(row_to_display)}_sharp.eps", bbox_inches='tight', pad_inches=-0.07, transparent=True)
 
 
-            '''
+            #################################################################################
+            # PREDICTION QUANTILES OVER 2020
             # plot predictions quantiles after conformal
             plot_predictions_quantiles(
                 task_name=task_name,
@@ -314,17 +286,6 @@ if __name__ == "__main__":
                 pred_sorted=data_tasks[task_name].pred_after_conformal_df[settings_optimization["quantiles"]].values,
                 conformal_analysis=True,
             )
-
-            if save_plot:
-                plt.gca().set_title('')
-                plt.gca().get_legend().remove() # remove legend
-                plt.gca().set_xlabel('')  # Remove the x-axis label
-                plt.gca().set_ylabel('')  # Remove the y-axis label
-                plt.gca().set_xticklabels('')
-                plt.gca().set_yticklabels('')
-                plt.savefig(
-                    f"C:\\Users\\tuissi\\Documents\\NWP\\submit_paper\\pred_quan\\{task_name}_conf_{rows_to_display.index(row_to_display)}_quan.eps",
-                    bbox_inches='tight', pad_inches=-0.06, transparent=True)
 
             # plot predictions quantiles  before conformance
             plot_predictions_quantiles(
@@ -335,16 +296,6 @@ if __name__ == "__main__":
                 conformal_analysis=False
             )
 
-            if save_plot:
-                plt.gca().set_title('')
-                plt.gca().get_legend().remove() # remove legend
-                plt.gca().set_xlabel('')  # Remove the x-axis label
-                plt.gca().set_ylabel('')  # Remove the y-axis label
-                plt.gca().set_xticklabels('')
-                plt.gca().set_yticklabels('')
-                plt.savefig(f"C:\\Users\\tuissi\\Documents\\NWP\\submit_paper\\pred_quan\\{task_name}_QRNN_quan.eps",
-                            bbox_inches='tight', pad_inches=-0.06)
-            '''
 
             '''
             # plot lr_hist
