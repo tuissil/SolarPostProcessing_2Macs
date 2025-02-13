@@ -46,12 +46,14 @@ matplotlib.use("TkAgg")
 from NWP_QR_data_import import split_data
 from pytorch_lightning import seed_everything
 from tools.cp_tools import compute_cqr, compute_pid, compute_cp
+import matplotlib.cm as cm
+from matplotlib.colors import Normalize
 
 class InvalidNumCaliSamples(Exception):
     pass
 
 
-def truth_table(methods, step_wise_cp_options, num_cali_samples_true, num_cali_samples_false, p_gains, optimize_pid, test_months):
+def truth_table(methods, step_wise_cp_options, num_cali_samples_true, num_cali_samples_false, p_gains, optimize_pid, test_months, T_burnin_arr):
     combinations = []
 
     for method in methods:
@@ -63,14 +65,26 @@ def truth_table(methods, step_wise_cp_options, num_cali_samples_true, num_cali_s
                         if optimize_pid:
                             # Add a row for each test month
                             for month in test_months:
-                                combinations.append([method, step_wise, num_cali, p_gain, month])
+                                for T_b in T_burnin_arr:
+                                    if T_b >= num_cali:
+                                        combinations.append([method, step_wise, num_cali, p_gain, month, num_cali])
+                                    else:
+                                        combinations.append([method, step_wise, num_cali, p_gain, month, T_b])
                         else:
-                            combinations.append([method, step_wise, num_cali, p_gain, None])
+                            for T_b in T_burnin_arr:
+                                if T_b >= num_cali:
+                                    combinations.append([method, step_wise, num_cali, p_gain, None, num_cali])
+                                else:
+                                    combinations.append([method, step_wise, num_cali, p_gain, None, T_b])
+
+                elif (method=='cqr' or method=='cp') and optimize_pid:
+                    for month in test_months:
+                        combinations.append([method, step_wise, num_cali, None, month, None])
                 else:
-                    combinations.append([method, step_wise, num_cali, None, None])
+                    combinations.append([method, step_wise, num_cali, None, None, None])
 
     # Create the DataFrame
-    df = pd.DataFrame(combinations, columns=['method', 'step_wise_cp', 'num_cali_samples', 'p_gain', 'test_set_number'])
+    df = pd.DataFrame(combinations, columns=['method', 'step_wise_cp', 'num_cali_samples', 'p_gain', 'test_set_number', 'T_burnin'])
 
     return df
 
@@ -99,16 +113,7 @@ def create_folder(path):
     return
 
 def train_hyperoptim(settings_optimization):
-    # numero_ore_pretest= settings['num_cali_samples']
-    # va_te_date_split = "2019-09-01 00:00:00" -> va_te_date_split = inizio test (gennaio 2020)  - numero_giorni_pretest
-    if settings_optimization["optimize_pid"]:
-        # original validation / test set separation
-        va_te_date_initial = datetime.strptime("2020-01-01 00:00:00", "%Y-%m-%d %H:%M:%S") + timedelta(days=-settings_optimization["num_cali_samples"])
-        if (va_te_date_initial + timedelta(days=+30*int(settings_optimization["test_set_number"])) + timedelta(days=settings_optimization["num_cali_samples"]))> datetime.strptime("2020-12-31 23:00:00", "%Y-%m-%d %H:%M:%S"):
-            print("Reduce test set number! Incomplete test set")
-        va_te_date_split = datetime.strftime(va_te_date_initial + timedelta(days=+30*int(settings_optimization["test_set_number"])),"%Y-%m-%d %H:%M:%S")
-    else:
-        va_te_date_split = datetime.strftime(datetime.strptime("2020-01-01 00:00:00", "%Y-%m-%d %H:%M:%S") + timedelta(days=-settings_optimization["num_cali_samples"]),"%Y-%m-%d %H:%M:%S")
+    va_te_date_split = datetime.strftime(datetime.strptime("2020-01-01 00:00:00", "%Y-%m-%d %H:%M:%S") + timedelta(days=-settings_optimization["num_cali_samples"]),"%Y-%m-%d %H:%M:%S")
 
     task_params = {}  # dict where to save all the optimal params for each station
 
@@ -121,22 +126,22 @@ def train_hyperoptim(settings_optimization):
                       hours_range=range(9, 17+1), # default range(9, 17+1)
                       scale_data=settings_optimization["scale_data"],
                       shuffle_train=settings_optimization["shuffle_train"],
-                      optimize_pid=settings_optimization["optimize_pid"])
+                      optimize_pid=settings_optimization["optimize_pid"],
+                      test_set_number=settings_optimization["test_set_number"],
+                      num_cali_days=settings_optimization["num_cali_samples"],    # valid just if optimize pid
+                      )
 
 
     for task_name in settings_optimization["task_names"]:
 
-        seed_everything(settings_optimization["initial_seed"])
-        #torch.manual_seed(100)
-
         print(f"Elaborating station {task_name}")
         # adjust path to save results in the correct folder
-        path = f"{settings_optimization['main_path']}/experiments/{settings_optimization['num_cali_samples']}/{task_name}"  #os.path.join(main_path, "experiments", task_name)
 
-        #writer = SummaryWriter(os.path.join(path, "runs"))
+        for n_ens in range(settings_optimization['n_ensembles']):
+            path = f"{settings_optimization['main_path']}/experiments/{settings_optimization['num_cali_samples']}/{task_name}/{n_ens}"  #os.path.join(main_path, "experiments", task_name)
 
-        # create apposite folder to save results inside task_name folder
-        create_folder(path)
+           # create apposite folder to save results inside task_name folder
+            create_folder(path)
 
         # select data related to the current station
         data = data_tasks[task_name]
@@ -153,6 +158,9 @@ def train_hyperoptim(settings_optimization):
         train_dataloader = DataLoader(DataloaderDataset(data.x_train.astype('float32'), data.y_train.astype('float32')), batch_size=settings_optimization["batch_size"], shuffle=settings_optimization["shuffle_dataloader"])
         vali_dataloader = DataLoader(DataloaderDataset(data.x_vali.astype('float32'), data.y_vali.astype('float32')), batch_size=settings_optimization["batch_size"])
         test_dataloader = DataLoader(DataloaderDataset(data.x_test.astype('float32'), data.y_test.astype('float32')), batch_size=len(data.x_test))
+
+
+        # hyperoptim just on the last of the ensemble members
 
         def objective(trial):
             torch.manual_seed(settings_optimization["initial_seed"])
@@ -179,7 +187,7 @@ def train_hyperoptim(settings_optimization):
                 net=net,
                 criterion=settings_optimization["criterion"],
                 optimizer=optimizer,
-                scheduler=scheduler, #######scheduler,
+                scheduler=scheduler,
                 decay_steps=settings_optimization["decay_steps"],  # used only if scheduler is present
                 num_epochs=settings_optimization["num_epochs_hyperoptim"],
                 train_data=train_dataloader,
@@ -248,13 +256,11 @@ def train_hyperoptim(settings_optimization):
 
 
         # TRAIN WITHOUT OPTUNA
-        #net.load_state_dict(torch.load(f"{path}/last_optim_model_cogeneration"))
-        #optim_param = train_model(net=net, criterion=criterion, optimizer=optimizer, patience=patience, num_epochs=num_epochs, training_data=training_data, vali_data=vali_data, enc_seq_len=enc_seq_len)
-
         optim_param = {}
+        torch.manual_seed(settings_optimization["initial_seed"])
 
         if settings_optimization["train_model_start"]:
-            for i in range(settings_optimization["n_ensembles"]):
+            for n_ens in range(settings_optimization["n_ensembles"]):
 
                 net = NWP_net(settings=settings)
 
@@ -267,30 +273,29 @@ def train_hyperoptim(settings_optimization):
                 scheduler = lr_scheduler.ExponentialLR(optimizer=optimizer, gamma=0.9,
                                                        verbose=True)  # gamma = 1 to deactivate the scheduler
 
-                optim_param[i] = train_model_dataloader(
+                optim_param[n_ens] = train_model_dataloader(
                     net=net,
                     criterion=settings_optimization["criterion"],
                     optimizer=optimizer,
-                    scheduler=scheduler, #######scheduler,
+                    scheduler=scheduler,
                     decay_steps=settings_optimization["decay_steps"],  # used only if scheduler is present
                     num_epochs=settings_optimization["num_epochs"],
                     train_data=train_dataloader,
                     vali_data=vali_dataloader,
                     test_data=test_dataloader,
                     patience=settings_optimization["patience"],
-                    path=path,
+                    path=f"{settings_optimization['main_path']}/experiments/{settings_optimization['num_cali_samples']}/{task_name}/{n_ens}",
                     Newton_method=settings_optimization["Newton_method"],  # set to True if you want to use a Newton method
                     error_precision=settings_optimization["error_precision"],  # number of decimals of the error
                 )
-            # optim_param according to the validation set
-            #torch.save(net.state_dict(), f"{path}/last_optim_model_his")
+
             data_tasks[task_name].task_params = optim_param
 
         data_tasks[task_name].test_dataloader = test_dataloader
 
     return settings, data_tasks
 
-def compute_metrics(data_tasks, settings_optimization, additional_settings, settings_cp, decimals_quantile_score, scale_back_data=True, optimize_pid=False):
+def compute_metrics(data_tasks, settings_optimization, additional_settings, settings_cp, decimals_quantile_score, scale_back_data=True, optimize_pid=False, test_month=0):
     quantile_score_table = pd.DataFrame()
     quantile_score_table_conformal = pd.DataFrame()
 
@@ -305,7 +310,7 @@ def compute_metrics(data_tasks, settings_optimization, additional_settings, sett
             if settings_optimization["train_model_start"]:
                 net.load_state_dict(data_tasks[task_name].task_params[i])
             else:
-                net.load_state_dict(torch.load(f"{path}/last_optim_model"))
+                net.load_state_dict(torch.load(f"{path}/{i}/last_optim_model"))
 
             # compute predictions
             for X, y in data_tasks[task_name].test_dataloader:
@@ -327,14 +332,16 @@ def compute_metrics(data_tasks, settings_optimization, additional_settings, sett
 
         pred_sorted = np.sort(pred)  # contains quantiles prediction
 
-        if optimize_pid:
-            # in this case num_cali_samples indicates the number of days you want to consider, the ones used for calibration are 1/3
+        if optimize_pid and test_month==0:
             samples_to_consider = settings_optimization["num_cali_samples"]*settings_optimization['pred_horiz']
-            y_test = y_test[:samples_to_consider]
-            pred_sorted = pred_sorted[:samples_to_consider]
-            days_to_consider_quantile_score = settings_optimization["num_cali_samples"]-settings_optimization['days_cali'] # days to exclude from the beginning
+            y_test = y_test[-samples_to_consider:]
+            pred_sorted = pred_sorted[-samples_to_consider:]
+            days_to_consider_quantile_score = 30  # days to exclude from the beginning
             samples_to_consider_quantile_score = days_to_consider_quantile_score*settings_optimization['pred_horiz']
-            settings_cp["num_cali_samples"]=settings_optimization["days_cali"]
+            settings_cp["num_cali_samples"]=settings_optimization["days_cali"] # change to execute the conformance, and restore it after
+        elif optimize_pid and test_month>0:
+            samples_to_consider = len(data_tasks[task_name].data_te) # consider all the samples
+            samples_to_consider_quantile_score = 30*settings_optimization['pred_horiz']  # for a fair comparison of the quantile score, we consider as test set just the year 2020
         else:
             samples_to_consider = len(data_tasks[task_name].data_te) # consider all the samples
             samples_to_consider_quantile_score = len(data_tasks[task_name].data_te.index[data_tasks[task_name].data_te.index.year == data_tasks[task_name].year_te[1]])  # for a fair comparison of the quantile score, we consider as test set just the year 2020
@@ -380,22 +387,6 @@ def compute_metrics(data_tasks, settings_optimization, additional_settings, sett
             columns=["y"] + [quantile for quantile in settings_optimization["quantiles"]],
             data=np.concatenate((y_test, pred_conformal), axis=1))
 
-        '''
-        # if same predictions but scaled
-        pred_conformal_df_scaled = pd.DataFrame(index=data_tasks[task_name].data_te.index,
-                                                  columns=["y"] + [quantile for quantile in settings_optimization["quantiles"]],
-                                                  data=np.concatenate((data_tasks[task_name].y_test.reshape(-1, 1),
-                                                                       pred_conformal_scaled.numpy()), axis=1))
-        '''
-        
-        # export data to csv (to use in R code)
-        '''
-        data_CQRA = pd.read_csv("C:\\Users\\tuissi\\Documents\\NWP\\2Macs_code\\SolarPostProcessing_pytorch\\data\\bon_CQRA_2MACS_2019_2020.txt", sep='\t', index_col=0,  date_format="%Y-%m-%d %H:%M:%S")
-        data_CQRA_2020 = data_CQRA[data_CQRA.index.year.isin([2020])]
-        data_CQRA_2020[[col for col in data_CQRA_2020 if 'QRNN8.' in col]] = pred_sorted
-        data_CQRA_2020.to_csv("C:\\Users\\tuissi\\Documents\\NWP\\code\\QuantileFcstComb-main\\Data\\bon_CQRA_2MACS_2020.txt", sep='\t', date_format="%Y-%m-%d %H:%M:%S")
-        '''
-
         # CONFORMANCE ANALYSIS
         results_cp = {}
         df = data_tasks[task_name].pred_conformal_df
@@ -412,53 +403,24 @@ def compute_metrics(data_tasks, settings_optimization, additional_settings, sett
             # returns also the kp history
             results_cp[task_name], lr_hist = compute_pid([df], settings=settings_cp, lr=settings_cp['pid_lr'], KI=settings_cp['pid_KI'])
 
+        if optimize_pid and test_month==0:
+            settings_cp["num_cali_samples"] = settings_optimization["num_cali_samples"]
+
         data_tasks[task_name].lr_hist = lr_hist
 
         # compute quantile score after conformal
         quantile_score_table_conformal[task_name] = [np.round(quantile_score(
             y=results_cp[task_name]['y'][-samples_to_consider_quantile_score:].to_numpy(),
-            f=results_cp[task_name][settings_optimization["quantiles"][-samples_to_consider_quantile_score:].tolist()].to_numpy(),
+            f=results_cp[task_name][settings_optimization["quantiles"]][-samples_to_consider_quantile_score:].to_numpy(),#results_cp[task_name][settings_optimization["quantiles"][-samples_to_consider_quantile_score:].tolist()].to_numpy(),
             tau=settings_optimization["quantiles"]
             ), decimals_quantile_score)
         ]
         data_tasks[task_name].pred_after_conformal_df = results_cp[task_name]
-        # sharpness plot after conformal
-        # plot_sharpness_plot(results_cp[task_name][quantiles.tolist()], task_name)
 
-        '''
-        # reliability plot after conformal analysis
-        _, _ = reliability_plot(
-            quantiles=settings_optimization["quantiles"],
-            y=results_cp[task_name]['y'].to_numpy().reshape(-1, 1),
-            pred_sorted=results_cp[task_name][settings_optimization["quantiles"].tolist()].to_numpy(),
-            task_name=task_name,
-            plot_graph=True
-        )
-
-        # reliability plot without conformal analysis
-        _, _ = reliability_plot(
-            quantiles=settings_optimization["quantiles"],
-            y=df['y'].to_numpy().reshape(-1, 1),
-            pred_sorted=df[settings_optimization["quantiles"].tolist()].to_numpy(),
-            task_name=task_name,
-            plot_graph=True
-        )
-        '''
-
-        # plot lr_hist
-        # plt.figure()
-        # plt.plot(lr_hist)
-        # plt.grid()
-        # plt.show()
-
-        #results_cp[task_name].plot()
         print('cp done')
 
     
     return quantile_score_table, quantile_score_table_conformal
-
-
-
 
 # Function to calculate quantile score
 # y = y_true
@@ -481,14 +443,10 @@ class PinballLoss(nn.Module):
         for index, quantile in enumerate(self.quantiles):
             errors = target - preds[:, index]
             loss = torch.mean(torch.max((quantile - 1) * errors, quantile * errors))
-            
-            # add loss for reliability plot
-            #loss_rel = 0.1*abs(torch.mean(abs(((target < preds[:, index]).float())-quantile)))   # default 0.01*
-            #loss = loss + (loss_rel**2/(loss+loss_rel))
+
             losses.append(loss)
-        #loss_rel = quantile_score(target, preds.detach())
-        #print(f"Loss rel: {loss_rel}")
-        return torch.mean(torch.stack(losses))#+loss_rel
+
+        return torch.mean(torch.stack(losses))
 
 HuberNorm_epsilon = 2e-3
 
@@ -543,7 +501,6 @@ class NWP_net(nn.Module):
         self.hidden_layer = \
             nn.Sequential(
                 nn.Linear(self.settings['hidden_size'], self.settings['hidden_size']),
-                #nn.Tanh()
                 nn.ReLU()
             )
 
@@ -556,12 +513,6 @@ class NWP_net(nn.Module):
                 nn.ReLU()
             )
 
-        # identify function for uncensored regression quantiles
-        # self.final_activation_param = nn.Parameter(torch.zeros(self.settings['out_size']), requires_grad=True)
-
-
-
-
     def forward(self, x):
         if self.settings["linear_map"]:
             x_out = x
@@ -572,17 +523,13 @@ class NWP_net(nn.Module):
 
         logit = self.output_layer(x_out)
 
-        # if identify function for uncensored regression quantiles
-        #logit = torch.maximum(self.final_activation_param, self.output_layer(x_out))
-
         return logit
 
 
 
 min_epoch_error = np.inf
 
-def train_model_dataloader(net, criterion, optimizer, num_epochs, train_data, vali_data, test_data, path, patience, scheduler=None, decay_steps=100, trial=None, pruner_epochs=0, pruner_max=0, pruner_sensitivity=np.inf, perfs_on_test=False, Newton_method=False, error_precision=8): #
-    #torch.manual_seed(1234)  # default 42 # for riproducibility
+def train_model_dataloader(net, criterion, optimizer, num_epochs, train_data, vali_data, test_data, path, patience, scheduler=None, decay_steps=100, trial=None, pruner_epochs=0, pruner_max=0, pruner_sensitivity=np.inf, perfs_on_test=False, Newton_method=False, error_precision=8, n_ens=0): #
     date_time = datetime.now().strftime("%d%m%y%H%M%S")
     if trial is None:
         # keep last num_to_keep runs
@@ -591,7 +538,6 @@ def train_model_dataloader(net, criterion, optimizer, num_epochs, train_data, va
         writer = SummaryWriter(f"{path}/runs/{date_time}")
     else:
         print(f"Start optimization: {date_time}")
-        # delete old trials
         folder_path=f"{path}/trials_logs"
         if trial._trial_id == 0:
             keep_recent_files(folder_path, 0)
@@ -629,9 +575,6 @@ def train_model_dataloader(net, criterion, optimizer, num_epochs, train_data, va
                         if train_loss.isnan():
                             print("Train error is NaN")
                             return
-                        # MPC train loss
-                        # _, X1 = X
-                        # train_loss = loss_MPC(train_loss, net, X1)
                         train_loss.backward()
                         return train_loss
                     optimizer.step(closure)
@@ -644,9 +587,6 @@ def train_model_dataloader(net, criterion, optimizer, num_epochs, train_data, va
                     if train_loss.isnan():
                         print("Train error is NaN")
                         break
-                    # MPC train loss
-                    # _, X1 = X
-                    # train_loss = loss_MPC(train_loss, net, X1)
                     train_loss.backward()
                     optimizer.step()
 
@@ -655,7 +595,6 @@ def train_model_dataloader(net, criterion, optimizer, num_epochs, train_data, va
 
             # train loss epoch
             train_loss_epoch = round((train_loss_batch/len(train_data)).item(), error_precision)
-            #print(f"Split {split}, epoch {epoch} - train loss: {train_loss_epoch[split]}")
 
 
             net.eval()
@@ -666,7 +605,6 @@ def train_model_dataloader(net, criterion, optimizer, num_epochs, train_data, va
         # Exponential decay 
         if scheduler!=None and epoch > 0 and epoch % (decay_steps) == 0:
             scheduler.step()
-            # HuberNorm_epsilon = HuberNorm_epsilon * 1e-2
 
 
         writer.add_scalar("Loss/train", train_loss_epoch, epoch)
@@ -770,10 +708,6 @@ def vali_model(net, vali_data, criterion):
 
     return vali_loss_batch/len(vali_data)+1*np.mean(loss_rel)  # vali loss across the dataloader
 
-
-
-
-
 def keep_recent_files(folder_path, num_to_keep=10):
 
     # adjust folder_path format
@@ -802,7 +736,6 @@ def reliability_plot(quantiles, y, pred_sorted, task_name, plot_graph=True, conf
     tmp_quantiles = pd.DataFrame(columns=quantiles, data=pred_sorted)
     scores_res = pd.concat([tmp_y, tmp_quantiles], axis=1)
     del tmp_y, tmp_quantiles
-
 
     # reliability_plot
     # definition of consistency bands
@@ -851,10 +784,14 @@ def reliability_plot(quantiles, y, pred_sorted, task_name, plot_graph=True, conf
         plt.show()
     return scores_res, data_reli
 
-def plot_sharpness_plot(scores_res, task_name):
+def plot_sharpness_plot(scores_res, task_name, plot_graph=True):
     int_width_98 = scores_res[.99].values - scores_res[.01].values
     int_width_90 = scores_res[.95].values - scores_res[.05].values
     int_width_80 = scores_res[.9].values - scores_res[.1].values
+
+    PIAW_98 = np.mean(int_width_98)
+    PIAW_90 = np.mean(int_width_90)
+    PIAW_80 = np.mean(int_width_80)
 
     # the sns catplot plot will represent
     # np.quantile(int_width_90, [0, 0.25, 0.5, 0.75, 1])
@@ -862,6 +799,7 @@ def plot_sharpness_plot(scores_res, task_name):
     # that fall outside this range are displayed independently
     # IQR = np.quantile(int_width_90, 0.75) - np.quantile(int_width_90, 0.25)
     # highest lines = quartile 0.75 + 1.5 * IQR
+    # lowest line = quartile 0.25 -1.5*IQR
     tmp_sharp = pd.DataFrame({
         "80": int_width_80,
         "90": int_width_90,
@@ -870,30 +808,78 @@ def plot_sharpness_plot(scores_res, task_name):
 
     tmp_sharp = pd.melt(tmp_sharp, var_name="interval", value_name="width")
 
-    # Plotting
-    p2 = sns.catplot(data=tmp_sharp, kind="box", x="interval", y="width", palette="colorblind")
-    # col_wrap=4, alpha=0.7, linewidth=1.5, width=0.6)
-    p2.set_xlabels("Nominal coverage rate [%]")
-    p2.set_ylabels("Interval width [W/m^2]")
-    p2.set(ylim=(0, 1200))  # , yticks=[0, 400, 800])
-    plt.grid()
-    plt.title(f"Sharpness plot {task_name}")
-    plt.show()
+    if plot_graph:
+        # Plotting
+        p2 = sns.catplot(data=tmp_sharp, kind="box", x="interval", y="width", palette="colorblind")
+        # col_wrap=4, alpha=0.7, linewidth=1.5, width=0.6)
+        p2.set_xlabels("Nominal coverage rate [%]")
+        p2.set_ylabels("Interval width [W/m^2]")
+        p2.set(ylim=(0, 1400), yticks=[0, 400, 800, 1200])
+        plt.grid()
+        plt.title(f"Sharpness plot {task_name}")
+        plt.show()
 
+    return PIAW_98, PIAW_90, PIAW_80
 
-# plot predictions quantiles
-def plot_predictions_quantiles(task_name, quantiles, y, pred_sorted, conformal_analysis):
-    plt.figure()
-    plt.plot(y, 'b')
-    for i in range(len(quantiles)):
-        plt.plot(pred_sorted[:, i], linewidth=0.5, label=quantiles[i])
-    plt.legend()
-    if conformal_analysis:
-        plt.title(f"Predictions quantiles {task_name} - Conformal analysis")
-    else:
-        plt.title(f"Predictions quantiles {task_name}")
-    plt.grid()
-    plt.show()
+def plot_predictions_quantiles_fill(task_name, quantiles, y, pred_sorted, conformal_analysis, plot_graphs):
+    if plot_graphs:
+        fig, ax = plt.subplots(figsize=(10, 3))
+        ax.plot(y, 'b', label="Actual", linewidth=1.5)  # Actual values in blue
+
+        # Set up the color gradient from yellow to red for each quantile pair
+        cmap = cm.plasma  # "plasma" colormap goes from purple to yellow and red
+        norm = Normalize(vmin=0, vmax=1)  # Normalize for range 0 to 1
+
+        n_intervals = len(quantiles) // 2  # Number of quantile intervals
+        for i in range(n_intervals):
+            lower_idx = i
+            upper_idx = -(i + 1)  # Pairs quantiles from outer to inner (e.g., 5th with 95th, 25th with 75th)
+
+            # Reverse the quantile position to ensure consistent coloring
+            quantile_position = i / (n_intervals - 1) if n_intervals > 1 else 0
+            color = cmap(norm(1 - quantile_position))  # Flip color mapping to match legend
+
+            # Plot the shaded region between the lower and upper quantile pairs
+            ax.fill_between(
+                np.arange(len(y)),  # x-axis
+                pred_sorted[:, lower_idx],  # lower bound of fill
+                pred_sorted[:, upper_idx],  # upper bound of fill
+                color=color,  # Color based on the gradient
+                label=f"{quantiles[lower_idx] * 100:.1f} - {quantiles[upper_idx] * 100:.1f}",
+                alpha=0.9
+            )
+
+            # Plot lines for each quantile (optional for clarity)
+            ax.plot(pred_sorted[:, lower_idx], color='g', linewidth=0.1)
+            ax.plot(pred_sorted[:, upper_idx], color='g', linewidth=0.1)
+
+        ax.legend(loc="upper left", fontsize="small")
+
+        # Set title based on conformal analysis status
+        title = f"Predictions Quantiles {task_name}{' - Conformal Analysis' if conformal_analysis else ''}"
+        ax.set_title(title)
+        ax.set_xlabel("Time [hours]")
+        ax.set_ylabel(r"GHI [W/m$^2$]")
+        ax.set_ylim(0, 800)
+
+        ax.grid(True)
+
+        # Set X-axis to represent hours
+        hours = np.tile(np.arange(9, 18, 1), len(y)//9)
+        hour_ticks = hours[::2]
+        ax.set_xticks(ticks=np.linspace(0, len(y) - 1, num=len(hours))[::2])
+        ax.set_xticklabels(hour_ticks)
+
+        # Add the color gradient legend spanning from 0 to 1
+        #sm = cm.ScalarMappable(cmap=cmap, norm=norm)
+        #sm.set_array([])
+        #cbar = fig.colorbar(sm, ax=ax, orientation='horizontal', pad=0.2)
+        #cbar.set_label('Coverage level', fontsize=14)
+        #cbar.ax.tick_params(labelsize=14)
+        #cbar.set_ticks(np.linspace(0, 1, 5))  # Set ticks at 0.0, 0.25, 0.5, 0.75, 1.0
+        #cbar.set_ticklabels([f"{tick:.2f}" for tick in np.linspace(0, 1, 5)])
+
+        plt.show()
 
 
 def compute_num_cali_samples(step_wise_cp, num_cali_samples_proposed, target_alpha, pred_horiz):

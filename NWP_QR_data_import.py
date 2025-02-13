@@ -8,6 +8,7 @@ Created on April 05 2024
 import os
 import pandas as pd
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from datetime import datetime, timedelta
 
 
 # Class Stn_data definition
@@ -50,7 +51,7 @@ def in_out_split(data):
 # Create dictionary with instances of class Stn_data
 # Associate to each station the corresponding train, (validation), and test I/O dataset as array in scaled or unscaled
 # form according to parameter scale_data
-def split_data(task, yr_tr, yr_te, yr_va, va_te_date_split, hours_range, scale_data=True, shuffle_train=False, optimize_pid=False):
+def split_data(task, yr_tr, yr_te, yr_va, va_te_date_split, hours_range, scale_data=True, shuffle_train=False, optimize_pid=False, test_set_number=None, num_cali_days=None):
     dir =os.path.join(os.getcwd(), 'data_zenith100')  # default 'data'
     stns = task
 
@@ -69,19 +70,27 @@ def split_data(task, yr_tr, yr_te, yr_va, va_te_date_split, hours_range, scale_d
             data_tr = data[data.index.year.isin(yr_tr)].sample(frac=1)
         else:
             data_tr = data[data.index.year.isin(yr_tr)]
-        #data_tr = data_tr[data_tr.index.hour.isin(hours_range)]  # if same hours range as in test set
+        data_tr = data_tr[data_tr.index.hour.isin(hours_range)]  # if same hours range as in test set
         
         # validation data
         data_va = data[data.index.year.isin(yr_va)][:va_te_date_split]  # data[data.index.year.isin(yr_va)]
-        #data_va = data_va[data_va.index.hour.isin(hours_range)]  # if same hours range as in test set
+        data_va = data_va[data_va.index.hour.isin(hours_range)]  # if same hours range as in test set
 
         # test data
-        #data_te = data[data.index.year.isin([yr_va[0], yr_te[0]])][va_te_date_split:]
-        data_te = data[data.index.year.isin(yr_te)][va_te_date_split:]
+        if optimize_pid:
+            if test_set_number > 0:
+                data_te = data[data.index.year.isin(yr_te)][datetime.strptime(va_te_date_split, "%Y-%m-%d %H:%M:%S")+timedelta(days=+30*(int(test_set_number)-1)):datetime.strptime(va_te_date_split, "%Y-%m-%d %H:%M:%S")+timedelta(days=int(num_cali_days)+(30*(int(test_set_number))))]
+            else:  # test_set_number == 0
+                data_te = data[data.index.year.isin(yr_te)][
+                          datetime.strptime(va_te_date_split, "%Y-%m-%d %H:%M:%S"):datetime.strptime(va_te_date_split,
+                                                                                       "%Y-%m-%d %H:%M:%S") + timedelta(
+                              days=int(num_cali_days))]
+
+        else:
+            data_te = data[data.index.year.isin(yr_te)][va_te_date_split:]
         data_te = data_te[data_te.index.hour.isin(hours_range)] # modified for conformance  data[data.index.year.isin(yr_te)]
-        
-        #target_test_df = data_te[['observations']].copy()
-        #target_test_df.rename(columns={'observations':stn}, inplace=True)
+
+
         if scale_data:
             scaler_output = MinMaxScaler().fit(
                 data_tr["observations"].values.reshape(-1, 1))  # scaler for just the output
