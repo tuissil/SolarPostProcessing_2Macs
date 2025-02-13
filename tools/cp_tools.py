@@ -107,9 +107,9 @@ def compute_cqr(results_e, settings: Dict):
                                                        target_alpha=settings['target_alpha'])
     test_PIs = []
     for t_s in range(num_test_samples):
-        preds_cali = preds_d[t_s:settings['num_cali_samples'] + t_s]
-        preds_test = preds_d[settings['num_cali_samples'] + t_s:settings['num_cali_samples'] + t_s + 1]
-        y_cali = target_d[t_s:settings['num_cali_samples'] + t_s]
+        preds_cali = preds_d[t_s:settings['num_cali_samples'] + t_s] # 150,9,13
+        preds_test = preds_d[settings['num_cali_samples'] + t_s:settings['num_cali_samples'] + t_s + 1] #  1,9,13
+        y_cali = target_d[t_s:settings['num_cali_samples'] + t_s] # 150,9
 
         test_PIs.append(exec_cqr(preds_cali=preds_cali,
                                  y_cali=y_cali,
@@ -124,7 +124,9 @@ def compute_cqr(results_e, settings: Dict):
     return aggr_df
 
 
-def compute_pid(results_e, settings, lr=0.01, KI=10, T_burnin=7, Tin=1e9, delta=5e-2):
+def compute_pid(results_e, settings, lr=0.01, KI=10, Tin=1e9, delta=5e-2):
+    T_burnin = settings['T_burnin']
+
     settings['target_quantiles'] = build_target_quantiles(settings['target_alpha'])
     # aggregate ensemble quantiles, fix crossimg, and compute cqr
     agg_q = []
@@ -145,6 +147,7 @@ def compute_pid(results_e, settings, lr=0.01, KI=10, T_burnin=7, Tin=1e9, delta=
     for alpha in settings['target_alpha']:
         # get index of the lower/upper quantiles for the current alpha from the map
         lq_idx = q_alpha_map[alpha]['l']
+        uq_idx = q_alpha_map[alpha]['u']
         uq_idx = q_alpha_map[alpha]['u']
         sets_h = []
 
@@ -168,8 +171,10 @@ def compute_pid(results_e, settings, lr=0.01, KI=10, T_burnin=7, Tin=1e9, delta=
                 sets_h.append(np.stack(results['sets'], axis=1).T)
                 h_j+=1
         else:
+            # q_ens is (test_days*pred_hor), 13
             preds_d = q_ens
             df.rename(columns={settings['target_name']: 'y'}, inplace=True)
+            # df['forecast'] is a dataset composed by lower/upper quantile
             df['forecasts'] = [np.array([preds_d[j, lq_idx], preds_d[j, uq_idx]])
                                  for j in range(len(df))]
 
@@ -194,6 +199,7 @@ def compute_pid(results_e, settings, lr=0.01, KI=10, T_burnin=7, Tin=1e9, delta=
 
 
 def exec_cp(preds_cali: np.array, y_cali: np.array, preds_test: np.array, settings: Dict):
+    # preds_cali is long num_vali_samples
     preds_cali = np.squeeze(preds_cali, axis=-1)
     if preds_test.shape[0]>1:
         sys.exit('ERROR: exec_cup supports single test samples')
@@ -202,37 +208,52 @@ def exec_cp(preds_cali: np.array, y_cali: np.array, preds_test: np.array, settin
     n=conf_score.shape[0]
     # Stack the quantiles to the point pred for each alpha (next sorted by fixing crossing)
     preds_test_q=[preds_test]
-    for alpha in settings['target_alpha']:
+    for alpha in settings['target_alpha']: # remember: we are using alpha
         q = min(1, np.ceil((n + 1) * (1 - alpha)) / n)  ######### TO DO
+        # Q_1_alpha is 1,pred_horiz,1
         Q_1_alpha= np.expand_dims(np.quantile(a=conf_score, q=q, axis=0, method='higher'), axis=(0,-1))
         # Append lower/upper PIs for the current alpha
+        # preds_test_q[i] is 1,pred_horiz,1
         preds_test_q.append(preds_test - Q_1_alpha)
         preds_test_q.append(preds_test + Q_1_alpha)
+    # preds_test_q is now a list long as the number of quantiles
     preds_test_q = np.concatenate(preds_test_q, axis=2)
     preds_test_q[preds_test_q < 0] = 0
     # Fix quantile crossing
     # return prediction flattened in temporal dimension (sample over pred horizon)
+    # sort the quantiles
     return fix_quantile_crossing(preds_test_q.reshape(-1, preds_test_q.shape[-1]))
 
 
 def compute_cp(results_e, settings):
+    # results_e[0] has (len_vali+len_test)*9,13 dims
     settings['target_quantiles'] = build_target_quantiles(settings['target_alpha'])
     # compute cp from point preds, fix crossing
     ens_p = []
-    for e_c in range(settings['num_ense']):
+    for e_c in range(settings['num_ense']): # select the columns with labels 0.5
         ens_p.append(results_e[e_c].loc[:, 0.5].to_numpy().reshape(-1, 1))
+    # ens_p contains the median
     ens_p = np.mean(np.concatenate(ens_p, axis=1), axis=1)
+    # ens_p_d reshapes ens_p using the prediction horizon
     ens_p_d = ens_p.reshape(-1, settings['pred_horiz'], 1)
+    # target_d reshapes the y
     target_d = results_e[0].filter([settings['target_name']], axis=1).to_numpy().reshape(-1, settings['pred_horiz'])
+    # num_test_samples is the number of days of the calibration set
     num_test_samples = ens_p_d.shape[0] - settings['num_cali_samples']
     test_PIs = []
     for t_s in range(num_test_samples):
+        # preds_cali is long num_cali_samples
         preds_cali = ens_p_d[t_s:settings['num_cali_samples'] + t_s]
+        # preds_test is long 1
         preds_test = ens_p_d[settings['num_cali_samples'] + t_s:settings['num_cali_samples'] + t_s + 1]
+        # y_cali is long num_cali_samples
         y_cali = target_d[t_s:settings['num_cali_samples'] + t_s]
         if not settings['stepwise']:
+            # preds_cali is num_cali_samples, pred_horiz, 1
             preds_cali = preds_cali.reshape(-1, 1)
+            # extend preds_cali with one dimension
             preds_cali = np.expand_dims(preds_cali, axis=-1)
+            # y_cali is num_cali_samples, pred_horiz
             y_cali = y_cali.reshape(-1,1)
 
         test_PIs.append(exec_cp(preds_cali=preds_cali,
@@ -240,7 +261,9 @@ def compute_cp(results_e, settings):
                                 preds_test=preds_test,
                                 settings={'target_alpha': settings['target_alpha']}))
 
+    # test_PIs contains the quantiles predictions
     test_PIs = np.concatenate(test_PIs, axis=0)
+    # aggr_df represents our output
     aggr_df = results_e[0].filter([settings['target_name']], axis=1)
     aggr_df = aggr_df.iloc[settings['pred_horiz'] * settings['num_cali_samples']:]
     for j in range(len(settings['target_quantiles'])):

@@ -78,7 +78,7 @@ def quantile_integrator(
     #lr_t = lr * (scores[:T_burnin].max() - scores[:T_burnin].min()) if proportional_lr and T_burnin > 0 else lr
     for t in tqdm(range(T_test)):
         t_lr = t
-        t_lr_min = max(t_lr - T_burnin, 0)
+        t_lr_min = int(max(t_lr - T_burnin, 0))
         lr_t = lr * (scores[t_lr_min:t_lr].max() - scores[t_lr_min:t_lr].min()) if proportional_lr and t_lr > 0 else lr
 
         lr_hist[t]=lr_t
@@ -87,6 +87,7 @@ def quantile_integrator(
         if t_pred < 0:
             continue # We can't make any predictions yet if our prediction time has not yet arrived
         # First, observe y_t and calculate coverage
+        # (n_test+n_vali) * pred_hor
         covereds[t] = qs[t] >= scores[t]
         # Next, calculate the quantile update and saturation function
         grad = alpha if covereds[t_pred] else -(1-alpha)
@@ -121,6 +122,8 @@ def cts_pid(data, alpha, lr, Csat, KI, T_burnin, score_function_name="cqr-asymme
         asymmetric = False
     elif score_function_name == "cqr-asymmetric":
         def score_function(y, forecasts):
+            # y is real_meas, forecast is predicted meas
+            # conformance score
             return np.array([forecasts[0] - y, y - forecasts[-1]])
 
         def set_function(forecast, q):
@@ -139,16 +142,20 @@ def cts_pid(data, alpha, lr, Csat, KI, T_burnin, score_function_name="cqr-asymme
     if asymmetric:
         stacked_scores = np.stack(data['scores'].to_list())
         kwargs['upper'] = False
-        q0 = fn(stacked_scores[:, 0], alpha / 2, lr, **kwargs)['q']
 
+        # q0
+        q0_lrhist0 = fn(stacked_scores[:, 0], alpha / 2, lr, **kwargs)
+        q0 = q0_lrhist0['q']
         # show kp evolution
-        lr_hist0=fn(stacked_scores[:, 0], alpha / 2, lr, **kwargs)['lr_hist']
+        lr_hist0 = q0_lrhist0['lr_hist']
+
 
         kwargs['upper'] = True
-        q1 = fn(stacked_scores[:, 1], alpha / 2, lr, **kwargs)['q']
-
+        # q1
+        q1_lrhist1 = fn(stacked_scores[:, 1], alpha / 2, lr, **kwargs)
+        q1 = q1_lrhist1['q']
         # show kp evolution
-        lr_hist1 = fn(stacked_scores[:, 1], alpha / 2, lr, **kwargs)['lr_hist']
+        lr_hist1 = q1_lrhist1['lr_hist']
 
         q = [np.array([q0[i], q1[i]]) for i in range(len(q0))]
 
